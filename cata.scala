@@ -1,23 +1,39 @@
 import scala.language.implicitConversions
 
+/** The domain of values, implemented according to the principle
+  * that primitives are free names in a bigger context.
+  *
+  * The method `lookupVal` looks up free names in the bigger
+  * context. In our case, the bigger context is infinitely
+  * big: it binds the name of all integer literals.
+  */
 trait Values {
-  // value domain! runtime type system!
   type =>:[Domain, Range] = PartialFunction[Domain, Range]
-  sealed trait Val {
+
+  // superclass of all values
+  trait Val {
+    // try to call this value as if it's a function
     def apply(arg: Val): Val
   }
 
+  // values of base type
   trait BaseVal extends Val {
-    def apply(arg: Val): Val = sys error "runtime type error lol"
+    def apply(arg: Val): Val =
+      sys error "type error: value of base type in operator position"
   }
 
+  // the unique value of type Unit
   case object TT extends BaseVal
+
+  // integers
   case class Num(n: Int) extends BaseVal
 
-  case class Fun(f: Val =>: Val) extends Val {
+  // functions
+  case class Fun(f: Val => Val) extends Val {
     def apply(arg: Val): Val = f(arg)
   }
 
+  // fixed point of functions
   case class Fix(f: Val) extends Val {
     def apply(v: Val): Val = f(this)(v)
   }
@@ -36,18 +52,24 @@ trait Values {
     case "*" => liftVal2 (_ * _)
     case "/" => liftVal2 (_ / _)
 
-    // Church Boolean!
+    // if0 : ℤ → ∀α. (Unit → α) → (Unit → α) → α
     case "if0" => Fun {
-      case Num(0) => Fun { case x => Fun { case y => x(TT) }}
-      case _      => Fun { case x => Fun { case y => y(TT) }}
+      case Num(0) => Fun { x => Fun { y => x(TT) }}
+      case _      => Fun { x => Fun { y => y(TT) }}
     }
 
     // Fixed-point operator!
-    case "fix" => Fun { case f => Fix(f) }
+    case "fix" => Fun(Fix)
   }
 }
 
+/** Catamorphism for syntax trees with names */
 object Namely extends Values {
+  /** We always want to keep the Name trait abstract and
+    * extensible so that we can generate names that will
+    * never collide with other names by declaring a private
+    * subclass of Name.
+    */
   trait Name {
     def get: String = this match {
       case StringLiteral(s) => s
@@ -62,45 +84,57 @@ object Namely extends Values {
   implicit def stringToName(s: String): Name = StringLiteral(s)
   implicit def stringToExp(s: String): Exp = Var(s)
 
-  // ExpF is the functor whose fixed point is Exp
-  sealed trait ExpF[T]
-  case class VarF[T](x: Name) extends ExpF[T]
-  case class AbsF[T](x: Name, body: T) extends ExpF[T]
-  case class AppF[T](fn: T, arg: T) extends ExpF[T]
+  // ExpFunctor is the functor whose fixed point is Exp
+  sealed trait ExpFunctor[T]
+  class Var[T](val x: Name) extends ExpFunctor[T]
+  class Abs[T](val x: Name, val body: T) extends ExpFunctor[T]
+  class App[T](val fn: T, val arg: T) extends ExpFunctor[T]
 
-  // illegal cyclic reference involving type Exp
-  // type Exp = ExpF[Exp]
+  // Constructor constructs Exp, extractor extracts from ExpFunctor.
+  // This assymetry prevents us from utilizing case classes.
+  //
+  // CAUTION: Necessitates generation of `equals` and `hashCode`
+  // in companion classes.
+  object Var {
+    def apply(x: Name): Exp = new Var[Exp](x)
+    def unapply[T](e: ExpFunctor[T]): Option[Name] = e match {
+      case v: Var[T] => Some(v.x) ; case _ => None }}
+  object App {
+    def apply(fn: Exp, arg: Exp): Exp = new App[Exp](fn, arg)
+    def unapply[T](e: ExpFunctor[T]): Option[(T, T)] = e match {
+      case v: App[T] => Some((v.fn, v.arg)) ; case _ => None }}
+  object Abs {
+    def apply(x: Name, body: Exp): Exp = new Abs[Exp](x, body)
+    def unapply[T](e: ExpFunctor[T]): Option[(Name, T)] = e match {
+      case v: Abs[T] => Some((v.x, v.body)) ; case _ => None }}
 
-  // ... will write the fixed point by hand.
+  // Scala doesn't support type-level recursions like
+  //
+  //     type Exp = ExpFunctor[Exp]
+  //
+  // So we have to roll the fixed point of a functor by hand.
 
-  case class Var(x: Name) extends Exp
-  case class Abs(x: Name, body: Exp) extends Exp
-  case class App(fn: Exp, arg: Exp) extends Exp
-
-  sealed trait Exp {
-    def fold[T](f: ExpF[T] => T): T = this match {
-      case Var(x) => f(VarF[T](x))
-      case Abs(x, body) => f(AbsF[T](x, body fold f))
-      case App(fn, arg) => f(AppF[T](fn fold f, arg fold f))
+  implicit class Exp(unroll: ExpFunctor[Exp]) {
+    def fold[T](f: ExpFunctor[T] => T): T = unroll match {
+      case Var(x)       => f(new Var(x))
+      case Abs(x, body) => f(new Abs(x, body fold f))
+      case App(fn, arg) => f(new App(fn fold f, arg fold f))
     }
   }
 
   object eval {
-    type Env = Name =>: Val
+    type Env = PartialFunction[Name, Val]
 
     val globalEnv: Env = { case x => lookupVal(x.get) }
 
     def withEnv(t: Exp) = t.fold[Env => Val] {
-      case VarF(x) => _(x)
+      case Var(x) => _(x)
 
-      case AbsF(x, body) => env => Fun {
-        case v => body {
-          case name if x == name => v
-          case otherwise         => env(otherwise)
-        }
+      case Abs(x, body) => env => Fun {
+        v => body(({ case y if x == y => v }: Env) orElse env)
       }
 
-      case AppF(fn, arg) => env => fn(env)(arg(env))
+      case App(fn, arg) => env => fn(env)(arg(env))
     }
 
     def apply(t: Exp) = eval.withEnv(t)(globalEnv)
@@ -108,11 +142,9 @@ object Namely extends Values {
 
   object pretty {
     def apply(t: Exp) = t.fold[String] {
-      case VarF(x) => x.toString
-
-      case AbsF(x, body) => s"(λ$x. $body)"
-
-      case AppF(fn, arg) => s"($fn $arg)"
+      case Var(x)       => x.toString
+      case Abs(x, body) => s"(λ$x. $body)"
+      case App(fn, arg) => s"($fn $arg)"
     }
   }
 
@@ -121,9 +153,7 @@ object Namely extends Values {
     println()
   }
 
-  test {
-    App(App("+", "2"), "2")
-  }
+  test { App(App("+", "2"), "2") }
 
   test {
     App(
@@ -144,36 +174,49 @@ object Namely extends Values {
   }
 }
 
+/** Catamorphism for nameless higher-order abstract syntax */
 object Nameless extends Values {
-  sealed trait ExpF[T]
-  case class AbsF[T](body: T => T) extends ExpF[T]
-  case class AppF[T](fn: T, arg: T) extends ExpF[T]
+  sealed trait ExpFunctor[T]
+  class Abs[T](val body: T => T) extends ExpFunctor[T]
+  class App[T](val fn: T, val arg: T) extends ExpFunctor[T]
+
+  // CAUTION: Necessitates generation of `equals` and `hashCode`
+  // in companion classes.
+  object Abs {
+    def apply[T](body: Exp[T] => Exp[T]): Exp[T] = new Abs[Exp[T]](body)
+    def unapply[T](e: ExpFunctor[T]): Option[T => T] = e match {
+      case v: Abs[T] => Some(v.body) ; case _ => None }}
+  object App {
+    def apply[T](fn: Exp[T], arg: Exp[T]): Exp[T] = new App[Exp[T]](fn, arg)
+    def unapply[T](e: ExpFunctor[T]): Option[(T, T)] = e match {
+      case v: App[T] => Some((v.fn, v.arg)) ; case _ => None }}
+
+  // This time Exp isn't the fixed point of ExpFunctor. Rather,
+  // An inhabitant of Exp[T] is an expression tree with T at the
+  // leaves; it can fold to a value of type T and nothing else.
+  // The real fixed point of ExpFunctor is isomorphic to
+  // (∀T. Exp[T]). Scala hasn't first-class polymorphism.
+  // We make do by implicit conversion.
+
+  case class ExpRoll[T](unroll: ExpFunctor[Exp[T]]) extends Exp[T]
+  case class Placeholder[T](v: T) extends Exp[T] {
+    def unroll: ExpFunctor[Exp[T]] = sys error "unrolling placeholder?"
+  }
+
+  implicit def functorToExp[T](f: ExpFunctor[Exp[T]]): Exp[T] = ExpRoll(f)
 
   object Exp {
-    def fmap[A, B](f: A => B, g: B => A): ExpF[A] => ExpF[B] = {
-      case AbsF(body)    => AbsF(f compose body compose g)
-      case AppF(fn, arg) => AppF(f(fn), f(arg))
+    def fmap[A, B](f: A => B, g: B => A): ExpFunctor[A] => ExpFunctor[B] = {
+      case Abs(body)    => new Abs(f compose body compose g)
+      case App(fn, arg) => new App(f(fn), f(arg))
     }
   }
 
-  case class PlaceHolder[T](get: T) extends Exp[T] {
-    def unroll: ExpF[Exp[T]] = sys error "unrolling placeholder?!"
-  }
-
-  case class App[T](fn: Exp[T], arg: Exp[T]) extends Exp[T] {
-    def unroll: ExpF[Exp[T]] = AppF(fn, arg)
-  }
-
-  case class Abs[T](body: Exp[T] => Exp[T]) extends Exp[T] {
-    def unroll: ExpF[Exp[T]] = AbsF(body)
-  }
-
   sealed trait Exp[T] {
-    def unroll: ExpF[Exp[T]]
-
-    def fold(f: ExpF[T] => T): T = this match {
-      case PlaceHolder(value) => value
-      case _ => f(Exp.fmap[Exp[T], T](_.fold(f), PlaceHolder.apply)(unroll))
+    def unroll: ExpFunctor[Exp[T]]
+    def fold(f: ExpFunctor[T] => T): T = this match {
+      case Placeholder(value) => value
+      case _ => f(Exp.fmap[Exp[T], T](_.fold(f), Placeholder.apply)(unroll))
     }
   }
 
@@ -189,69 +232,49 @@ object Nameless extends Values {
     def apply(t: Exp[String]) = {
       val name = new NameGenerator
       t.fold {
-        case AbsF(body)    => { val x = name.next ; s"(λ$x. ${body(x)})" }
-        case AppF(fn, arg) => s"($fn $arg)"
+        case Abs(body)    => { val x = name.next ; s"(λ$x. ${body(x)})" }
+        case App(fn, arg) => s"($fn $arg)"
       }
     }
   }
 
   object eval {
     def apply(t: Exp[Val]): Val = t.fold {
-      case AbsF(body)    => Fun { case x => body(x) }
-      case AppF(fn, arg) => fn(arg)
+      case Abs(body)    => Fun { case x => body(x) }
+      case App(fn, arg) => fn(arg)
     }
   }
 
-  implicit def anyToExp[T](s: T): Exp[T] = PlaceHolder(s)
-  implicit def integerLiteral(n: Int): Exp[Val] = Num(n)
-  implicit def prettyIntLit(n: Int): Exp[String] = n.toString
+  implicit def anyToExp[T](s: T): Exp[T] = Placeholder(s)
   implicit def stringToExpVal(s: String): Exp[Val] = lookupVal(s)
 
-  // this function is impossible because Scala lacks
-  // first class polymorphism
-  //
-  // def test(t[T]: => Exp[T]) {
-  //   println(s"${pretty(t)} = ${eval(t)}")
-  //   println()
-  // }
+  // Faking (∀T. Exp[T])
 
-  def test(t1: => Exp[String])(t2: => Exp[Val]) {
+  def ex1[T](implicit _cs: String => Exp[T]): Exp[T] =
+    App(App("+", "2"), "2")
+
+  def ex2[T](implicit _cs: String => Exp[T]): Exp[T] =
+    App(
+      App("fix", Abs(f => Abs(n =>
+        App(App(App("if0", n),
+          Abs(_ => "0")),
+          Abs(_ => App(App("+", n), App(f, App(App("-", n), "1")))))))),
+      "10")
+
+  def ex3[T](implicit _cs: String => Exp[T]): Exp[T] =
+    App(
+      App("fix", Abs(f => Abs(n =>
+        App(App(App("if0", n),
+          Abs(_ => "0")),
+          Abs(_ => App(App("*", n), App(f, App(App("-", n), "1")))))))),
+      "10")
+
+  def test(t1: Exp[String])(t2: Exp[Val]) {
     println(s"${pretty(t1)} = ${eval(t2)}")
     println()
   }
 
-  test { App(App("+", 2), 2) } { App(App("+", 2), 2) }
-
-  test {
-    App(
-      App("fix", Abs(f => Abs(n =>
-        App(App(App("if0", n),
-          Abs(_ => 0)),
-          Abs(_ => App(App("+", n), App(f, App(App("-", n), 1)))))))),
-      10)
-  } {
-    App(
-      App("fix", Abs(f => Abs(n =>
-        App(App(App("if0", n),
-          Abs(_ => 0)),
-          Abs(_ => App(App("+", n), App(f, App(App("-", n), 1)))))))),
-      10)
-  }
-
-  test {
-    App(
-      App("fix", Abs(f => Abs(n =>
-        App(App(App("if0", n),
-          Abs(_ => 1)),
-          Abs(_ => App(App("*", n), App(f, App(App("-", n), 1)))))))),
-      5)
-  } {
-    App(
-      App("fix", Abs(f => Abs(n =>
-        App(App(App("if0", n),
-          Abs(_ => 1)),
-          Abs(_ => App(App("*", n), App(f, App(App("-", n), 1)))))))),
-      5)
-  }
-
+  test(ex1)(ex1)
+  test(ex2)(ex2)
+  test(ex3)(ex3)
 }
