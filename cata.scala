@@ -85,8 +85,6 @@ trait NamelyAlgebra extends Names {
   // ExpFunctor is the functor whose fixed point is Exp
   sealed trait ExpFunctor[T]
 
-  import UnionType.Or
-
   object Var {
     def apply(x: Name): Exp = Impl[Exp](x)
     def unapply[T](e: Impl[T]): Option[Name] = Impl.unapply(e)
