@@ -63,8 +63,7 @@ trait Values {
   }
 }
 
-/** Catamorphism for syntax trees with names */
-object Namely extends Values {
+trait Names {
   /** We always want to keep the Name trait abstract and
     * extensible so that we can generate names that will
     * never collide with other names by declaring a private
@@ -80,33 +79,37 @@ object Namely extends Values {
   case class StringLiteral(s: String) extends Name {
     override def toString = s
   }
+}
 
-  implicit def stringToName(s: String): Name = StringLiteral(s)
-  implicit def stringToExp(s: String): Exp = Var(s)
-
+trait NamelyAlgebra extends Names {
   // ExpFunctor is the functor whose fixed point is Exp
   sealed trait ExpFunctor[T]
-  class Var[T](val x: Name) extends ExpFunctor[T]
-  class Abs[T](val x: Name, val body: T) extends ExpFunctor[T]
-  class App[T](val fn: T, val arg: T) extends ExpFunctor[T]
 
-  // Constructor constructs Exp, extractor extracts from ExpFunctor.
-  // This assymetry prevents us from utilizing case classes.
-  //
-  // CAUTION: Necessitates generation of `equals` and `hashCode`
-  // in companion classes.
+  import UnionType.Or
+
   object Var {
-    def apply(x: Name): Exp = new Var[Exp](x)
-    def unapply[T](e: ExpFunctor[T]): Option[Name] = e match {
-      case v: Var[T] => Some(v.x) ; case _ => None }}
+    def apply(x: Name): Exp = Impl[Exp](x)
+    def unapply[T](e: Impl[T]): Option[Name] = Impl.unapply(e)
+
+    private[NamelyAlgebra]
+    case class Impl[T](val x: Name) extends ExpFunctor[T]
+  }
+
   object App {
-    def apply(fn: Exp, arg: Exp): Exp = new App[Exp](fn, arg)
-    def unapply[T](e: ExpFunctor[T]): Option[(T, T)] = e match {
-      case v: App[T] => Some((v.fn, v.arg)) ; case _ => None }}
+    def apply(fn: Exp, arg: Exp): Exp = Impl[Exp](fn, arg)
+    def unapply[T](e: Impl[T]): Option[(T, T)] = Impl.unapply(e)
+
+    private[NamelyAlgebra]
+    case class Impl[T](val fn: T, val arg: T) extends ExpFunctor[T]
+  }
+
   object Abs {
-    def apply(x: Name, body: Exp): Exp = new Abs[Exp](x, body)
-    def unapply[T](e: ExpFunctor[T]): Option[(Name, T)] = e match {
-      case v: Abs[T] => Some((v.x, v.body)) ; case _ => None }}
+    def apply(x: Name, body: Exp): Exp = Impl[Exp](x, body)
+    def unapply[T](e: Impl[T]): Option[(Name, T)] = Impl.unapply(e)
+
+    private[NamelyAlgebra]
+    case class Impl[T](val x: Name, val body: T) extends ExpFunctor[T]
+  }
 
   // Scala doesn't support type-level recursions like
   //
@@ -114,13 +117,19 @@ object Namely extends Values {
   //
   // So we have to roll the fixed point of a functor by hand.
 
-  implicit class Exp(unroll: ExpFunctor[Exp]) {
+  implicit class Exp(private[NamelyAlgebra] val unroll: ExpFunctor[Exp]) {
     def fold[T](f: ExpFunctor[T] => T): T = unroll match {
-      case Var(x)       => f(new Var(x))
-      case Abs(x, body) => f(new Abs(x, body fold f))
-      case App(fn, arg) => f(new App(fn fold f, arg fold f))
+      case Var(x)       => f(Var.Impl(x))
+      case Abs(x, body) => f(Abs.Impl(x, body fold f))
+      case App(fn, arg) => f(App.Impl(fn fold f, arg fold f))
     }
   }
+}
+
+/** Catamorphism for syntax trees with names */
+object Namely extends NamelyAlgebra with Values {
+  implicit def stringToName(s: String): Name = StringLiteral(s)
+  implicit def stringToExp(s: String): Exp = Var(s)
 
   object eval {
     type Env = PartialFunction[Name, Val]
@@ -174,22 +183,23 @@ object Namely extends Values {
   }
 }
 
-/** Catamorphism for nameless higher-order abstract syntax */
-object Nameless extends Values {
+trait NamelessAlgebra {
   sealed trait ExpFunctor[T]
-  class Abs[T](val body: T => T) extends ExpFunctor[T]
-  class App[T](val fn: T, val arg: T) extends ExpFunctor[T]
-
-  // CAUTION: Necessitates generation of `equals` and `hashCode`
-  // in companion classes.
   object Abs {
-    def apply[T](body: Exp[T] => Exp[T]): Exp[T] = new Abs[Exp[T]](body)
-    def unapply[T](e: ExpFunctor[T]): Option[T => T] = e match {
-      case v: Abs[T] => Some(v.body) ; case _ => None }}
+    def apply[T](body: Exp[T] => Exp[T]): Exp[T] = Impl[Exp[T]](body)
+    def unapply[T](e: Impl[T]): Option[T => T] = Impl.unapply(e)
+
+    private[NamelessAlgebra]
+    case class Impl[T](val body: T => T) extends ExpFunctor[T]
+  }
+
   object App {
-    def apply[T](fn: Exp[T], arg: Exp[T]): Exp[T] = new App[Exp[T]](fn, arg)
-    def unapply[T](e: ExpFunctor[T]): Option[(T, T)] = e match {
-      case v: App[T] => Some((v.fn, v.arg)) ; case _ => None }}
+    def apply[T](fn: Exp[T], arg: Exp[T]): Exp[T] = Impl[Exp[T]](fn, arg)
+    def unapply[T](e: Impl[T]): Option[(T, T)] = Impl.unapply(e)
+
+    private[NamelessAlgebra]
+    case class Impl[T](val fn: T, val arg: T) extends ExpFunctor[T]
+  }
 
   // This time Exp isn't the fixed point of ExpFunctor. Rather,
   // An inhabitant of Exp[T] is an expression tree with T at the
@@ -207,8 +217,8 @@ object Nameless extends Values {
 
   object Exp {
     def fmap[A, B](f: A => B, g: B => A): ExpFunctor[A] => ExpFunctor[B] = {
-      case Abs(body)    => new Abs(f compose body compose g)
-      case App(fn, arg) => new App(f(fn), f(arg))
+      case Abs(body)    => Abs.Impl(f compose body compose g)
+      case App(fn, arg) => App.Impl(f(fn), f(arg))
     }
   }
 
@@ -219,7 +229,10 @@ object Nameless extends Values {
       case _ => f(Exp.fmap[Exp[T], T](_.fold(f), Placeholder.apply)(unroll))
     }
   }
+}
 
+/** Catamorphism for nameless higher-order abstract syntax */
+object Nameless extends NamelessAlgebra with Values {
   object pretty {
     private class NameGenerator {
       var index = 0
@@ -265,9 +278,9 @@ object Nameless extends Values {
     App(
       App("fix", Abs(f => Abs(n =>
         App(App(App("if0", n),
-          Abs(_ => "0")),
+          Abs(_ => "1")),
           Abs(_ => App(App("*", n), App(f, App(App("-", n), "1")))))))),
-      "10")
+      "5")
 
   def test(t1: Exp[String])(t2: Exp[Val]) {
     println(s"${pretty(t1)} = ${eval(t2)}")
