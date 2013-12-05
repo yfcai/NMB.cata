@@ -86,24 +86,51 @@ trait NamelyAlgebra extends Names {
   sealed trait ExpFunctor[T]
 
   object Var {
-    def apply(x: Name): Exp = Impl[Exp](x)
-    def unapply[T](e: Impl[T]): Option[Name] = Impl.unapply(e)
+    def apply(x: Name): Exp = Exp(Impl(x))
+    def unapply[T](e: ExpFunctor[T]): Option[Name] = e match {
+      case Exp(unroll) => unapplyUnrolled(unroll)
+      case _           => unapplyUnrolled(e)
+    }
+
+    private[this]
+    def unapplyUnrolled[T](e: ExpFunctor[T]): Option[Name] = e match {
+      case i: Impl[T] => Impl.unapply(i)
+      case _          => None
+    }
 
     private[NamelyAlgebra]
     case class Impl[T](val x: Name) extends ExpFunctor[T]
   }
 
   object App {
-    def apply(fn: Exp, arg: Exp): Exp = Impl[Exp](fn, arg)
-    def unapply[T](e: Impl[T]): Option[(T, T)] = Impl.unapply(e)
+    def apply(fn: Exp, arg: Exp): Exp = Exp(Impl(fn, arg))
+    def unapply[T](e: ExpFunctor[T]): Option[(T, T)] = e match {
+      case Exp(unroll) => unapplyUnrolled(unroll)
+      case _           => unapplyUnrolled(e)
+    }
+
+    private[this]
+    def unapplyUnrolled[T](e: ExpFunctor[T]): Option[(T, T)] = e match {
+      case i: Impl[T] => Impl.unapply(i)
+      case _          => None
+    }
 
     private[NamelyAlgebra]
     case class Impl[T](val fn: T, val arg: T) extends ExpFunctor[T]
   }
 
   object Abs {
-    def apply(x: Name, body: Exp): Exp = Impl[Exp](x, body)
-    def unapply[T](e: Impl[T]): Option[(Name, T)] = Impl.unapply(e)
+    def apply(x: Name, body: Exp): Exp = Exp(Impl(x, body))
+    def unapply[T](e: ExpFunctor[T]): Option[(Name, T)] = e match {
+      case Exp(unroll) => unapplyUnrolled(unroll)
+      case _           => unapplyUnrolled(e)
+    }
+
+    private[this]
+    def unapplyUnrolled[T](e: ExpFunctor[T]): Option[(Name, T)] = e match {
+      case i: Impl[T] => Impl.unapply(i)
+      case _          => None
+    }
 
     private[NamelyAlgebra]
     case class Impl[T](val x: Name, val body: T) extends ExpFunctor[T]
@@ -115,7 +142,9 @@ trait NamelyAlgebra extends Names {
   //
   // So we have to roll the fixed point of a functor by hand.
 
-  implicit class Exp(private[NamelyAlgebra] val unroll: ExpFunctor[Exp]) {
+  case class Exp(private[NamelyAlgebra] val unroll: ExpFunctor[Exp])
+  extends ExpFunctor[Exp]
+  {
     def fold[T](f: ExpFunctor[T] => T): T = unroll match {
       case Var(x)       => f(Var.Impl(x))
       case Abs(x, body) => f(Abs.Impl(x, body fold f))
@@ -124,17 +153,22 @@ trait NamelyAlgebra extends Names {
   }
 }
 
-/** Catamorphism for syntax trees with names */
+/** Catamorphisms for syntax trees with names */
 object Namely extends NamelyAlgebra with Values {
   implicit def stringToName(s: String): Name = StringLiteral(s)
   implicit def stringToExp(s: String): Exp = Var(s)
 
-  object eval {
+  trait Evaluation {
+    def withEnv(t: Exp): Env => Val
+
     type Env = PartialFunction[Name, Val]
-
     val globalEnv: Env = { case x => lookupVal(x.get) }
+    def apply(t: Exp) = eval.withEnv(t)(globalEnv)
+  }
 
-    def withEnv(t: Exp) = t.fold[Env => Val] {
+  /** evaluation via a visitor */
+  object evalVisitor extends Evaluation {
+    def withEnv(t: Exp): Env => Val = t.fold[Env => Val] {
       case Var(x) => _(x)
 
       case Abs(x, body) => env => Fun {
@@ -143,8 +177,19 @@ object Namely extends NamelyAlgebra with Values {
 
       case App(fn, arg) => env => fn(env)(arg(env))
     }
+  }
 
-    def apply(t: Exp) = eval.withEnv(t)(globalEnv)
+  /** evaluation by pattern matching and explicit recursion */
+  object eval extends Evaluation {
+    def withEnv(t: Exp): Env => Val = t match {
+      case Var(x) => _(x)
+
+      case Abs(x, body) => env => Fun {
+        v => withEnv(body)(({ case y if x == y => v }: Env) orElse env)
+      }
+
+      case App(fn, arg) => env => withEnv(fn)(env)(withEnv(arg)(env))
+    }
   }
 
   object pretty {
@@ -229,7 +274,7 @@ trait NamelessAlgebra {
   }
 }
 
-/** Catamorphism for nameless higher-order abstract syntax */
+/** Catamorphisms for nameless higher-order abstract syntax */
 object Nameless extends NamelessAlgebra with Values {
   object pretty {
     private class NameGenerator {
