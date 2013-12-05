@@ -142,14 +142,28 @@ trait NamelyAlgebra extends Names {
   //
   // So we have to roll the fixed point of a functor by hand.
 
-  case class Exp(private[NamelyAlgebra] val unroll: ExpFunctor[Exp])
-  extends ExpFunctor[Exp]
+  sealed trait Exp extends ExpFunctor[Exp]
   {
     def fold[T](f: ExpFunctor[T] => T): T = unroll match {
       case Var(x)       => f(Var.Impl(x))
       case Abs(x, body) => f(Abs.Impl(x, body fold f))
       case App(fn, arg) => f(App.Impl(fn fold f, arg fold f))
     }
+
+    private[NamelyAlgebra]
+    def unroll: ExpFunctor[Exp]
+  }
+
+  object Exp {
+    private[NamelyAlgebra]
+    case class Impl(private[NamelyAlgebra] val unroll: ExpFunctor[Exp])
+    extends Exp
+
+    private[NamelyAlgebra]
+    def apply(e: ExpFunctor[Exp]): Exp = Impl(e)
+
+    private[NamelyAlgebra]
+    def unapply(e: Impl): Option[ExpFunctor[Exp]] = Impl.unapply(e)
   }
 }
 
