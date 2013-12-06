@@ -91,7 +91,7 @@ trait AlgebraicDataType {
     def map[R](f: T => R) = fmap(f)(this)
   }
 
-  case class Exp(unroll: Functor[Exp]) extends Functor[Exp] {
+  case class ADT(unroll: Functor[ADT]) extends Functor[ADT] {
     // catamorphism
     def fold[T](f: Algebra[T]): T = f(unroll map (_ fold f))
   }
@@ -107,9 +107,9 @@ trait LambdaExpr extends AlgebraicDataType with Names {
   }
 
   object Var {
-    def apply(x: Name): Exp = Exp(Impl(x))
+    def apply(x: Name): ADT = ADT(Impl(x))
     def unapply[T](e: Functor[T]): Option[Name] = e match {
-      case Exp(unroll) => unapplyUnrolled(unroll)
+      case ADT(unroll) => unapplyUnrolled(unroll)
       case _           => unapplyUnrolled(e)
     }
 
@@ -124,9 +124,9 @@ trait LambdaExpr extends AlgebraicDataType with Names {
   }
 
   object App {
-    def apply(fn: Exp, arg: Exp): Exp = Exp(Impl(fn, arg))
+    def apply(fn: ADT, arg: ADT): ADT = ADT(Impl(fn, arg))
     def unapply[T](e: Functor[T]): Option[(T, T)] = e match {
-      case Exp(unroll) => unapplyUnrolled(unroll)
+      case ADT(unroll) => unapplyUnrolled(unroll)
       case _           => unapplyUnrolled(e)
     }
 
@@ -141,9 +141,9 @@ trait LambdaExpr extends AlgebraicDataType with Names {
   }
 
   object Abs {
-    def apply(x: Name, body: Exp): Exp = Exp(Impl(x, body))
+    def apply(x: Name, body: ADT): ADT = ADT(Impl(x, body))
     def unapply[T](e: Functor[T]): Option[(Name, T)] = e match {
-      case Exp(unroll) => unapplyUnrolled(unroll)
+      case ADT(unroll) => unapplyUnrolled(unroll)
       case _           => unapplyUnrolled(e)
     }
 
@@ -158,20 +158,20 @@ trait LambdaExpr extends AlgebraicDataType with Names {
   }
 
   implicit def stringToName(s: String): Name = StringLiteral(s)
-  implicit def stringToExp(s: String): Exp = Var(s)
+  implicit def stringToADT(s: String): ADT = Var(s)
 }
 
 trait Calculus extends AlgebraicDataType with Names with Values {
   type Env = PartialFunction[Name, Val]
 
   trait Evaluation {
-    def withEnv(t: Exp): Env => Val
+    def withEnv(t: ADT): Env => Val
     val globalEnv: Env = { case x => lookupVal(x.get) }
-    def apply(t: Exp) = withEnv(t)(globalEnv)
+    def apply(t: ADT) = withEnv(t)(globalEnv)
   }
 
   object eval extends Evaluation {
-    def withEnv(t: Exp): Env => Val = t fold evalAlgebra
+    def withEnv(t: ADT): Env => Val = t fold evalAlgebra
   }
 
   /** extension point: evaluation operation */
@@ -179,7 +179,7 @@ trait Calculus extends AlgebraicDataType with Names with Values {
     case x => sys error s"No clue how to evaluate $x"
   }
 
-  def pretty(t: Exp): String = t fold prettyAlgebra
+  def pretty(t: ADT): String = t fold prettyAlgebra
 
   /** extension point: pretty print */
   def prettyAlgebra: Algebra[String] = {
@@ -208,7 +208,7 @@ trait LambdaCalculus extends Calculus with LambdaExpr {
     * (for illustration purposes only)
     */
   object evalExplicit extends Evaluation {
-    def withEnv(t: Exp): Env => Val = t match {
+    def withEnv(t: ADT): Env => Val = t match {
       case Var(x) => _(x)
       case App(fn, arg) => env => withEnv(fn)(env)(withEnv(arg)(env))
       case Abs(x, body) => env => Fun {
@@ -229,9 +229,9 @@ trait DebugExpr extends AlgebraicDataType {
   object Debug {
     private[DebugExpr]
     case class Impl[T](t: T) extends Functor[T]
-    def apply(t: Exp): Exp = Exp(Impl(t))
+    def apply(t: ADT): ADT = ADT(Impl(t))
     def unapply[T](e: Functor[T]): Option[T] = e match {
-      case Exp(unroll) => unapplyUnrolled(unroll)
+      case ADT(unroll) => unapplyUnrolled(unroll)
       case _           => unapplyUnrolled(e)
     }
 
@@ -259,7 +259,7 @@ trait DebugCalculus extends Calculus with DebugExpr {
 object TestCalculus extends LambdaCalculus with DebugCalculus
 import TestCalculus._
 
-def test(t: => Exp) {
+def test(t: => ADT) {
   println(s"${pretty(t)} = ${eval(t)}")
   println()
 }
