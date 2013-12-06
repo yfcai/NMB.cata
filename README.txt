@@ -1,5 +1,4 @@
-A scala implementation of some catamorphisms discussed in:
+A solution to the expression problem based on:
 
-Geoffrey Washburn and Stephanie Weirich.
-Boxes go bananas: encoding higher-order abstract syntax
-with parametric polymorphism.
+Erik Meijer and Graham Hutton.
+Bananas in space: extending fold and unfold to exponential types.
