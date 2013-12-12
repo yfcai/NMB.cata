@@ -79,23 +79,7 @@ trait Names {
   }
 }
 
-trait AlgebraicDataType {
-  type Algebra  [T] = PartialFunction[Functor[T], T]
-
-  /** extension point: adding new data types */
-  def fmap[T, R](f: T => R): Functor[T] => Functor[R] = {
-    case x => sys error s"No clue how to map over $x"
-  }
-
-  trait Functor[T] {
-    def map[R](f: T => R) = fmap(f)(this)
-  }
-
-  case class ADT(unroll: Functor[ADT]) extends Functor[ADT] {
-    // catamorphism
-    def fold[T](f: Algebra[T]): T = f(unroll map (_ fold f))
-  }
-}
+trait AlgebraicDataType extends NameBindingLanguage
 
 trait LambdaExpr extends AlgebraicDataType with Names {
   override
