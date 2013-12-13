@@ -1,5 +1,4 @@
 import scala.language.implicitConversions
-import scala.util.hashing.MurmurHash3
 
 trait NameBindingLanguage {
   type Algebra  [T] = PartialFunction[Functor[T], T]
@@ -26,7 +25,7 @@ trait NameBindingLanguage {
     def fold[T](f: Algebra[T]): T = f(this map (_ fold f))
 
     // paramorphism
-    def para[T](f: (ADT, Functor[T]) => T): T = {
+    def para[T](f: (ADT, => Functor[T]) => T): T = {
       var traversed = traverse
       fold[T] {
         case s: Functor[T] =>
@@ -36,12 +35,14 @@ trait NameBindingLanguage {
       }
     }
 
-    def subst(from: Binder, to: ADT): ADT = fold[ADT] {
-      case y: Bound[_] if y.binder == from => to
+    def subst(from: Binder, to: ADT): ADT = subst(Map(from -> to))
+
+    def subst(env: Env[ADT]): ADT = fold[ADT] {
+      case y: Bound[_] if env.isDefinedAt(y.binder) => env(y.binder)
       case otherwise => otherwise.toADT
     }
 
-    //def subst(env: Env[ADT]): ADT =
+    def pretty: String = para(prettyMorphism)
 
     /** gives a list of ADTs in traversal order */
     def traverse: List[ADT] = {
@@ -91,7 +92,19 @@ trait NameBindingLanguage {
     }
 
     def unapply(b: T): Option[(Binder, ADT)] = Some((b.binder, b.body))
-  } 
+
+    def replaceBody(binder: Binder, body: ADT): Binder =
+      if (binder.body == body)
+        binder
+      else
+        hardReplaceBody(binder, body)
+
+    def hardReplaceBody(binder: Binder, body: ADT): Binder = {
+      val binder2 = apply { x => body.subst(binder, x) }
+      binder2.defaultName = binder.defaultName
+      binder2
+    }
+  }
 
   trait Binder extends ADT {
     // inherited from case class
@@ -101,12 +114,12 @@ trait NameBindingLanguage {
     // cleverly loop to self
     binder = this
 
-    lazy val name: String = "???"
+    lazy val name: String = christianMe(body)
 
-    def toHoas: ADT => ADT = toFun[ADT] { case x => x.toADT }
+    def apply(arg: ADT): ADT = (toFun[ADT] { case x => x.toADT })(arg)
 
     def toFun[T](algebra: Algebra[T]): T => T = x => body.fold[T] {
-      case y: Bound[_] if y.binder eq this => x
+      case y: Bound[_] if y.binder == this => x
       case otherwise => algebra(otherwise)
     }
 
@@ -115,14 +128,19 @@ trait NameBindingLanguage {
 
     private def christianMe(body: ADT): String = {
       // - Do you renounce Satan?
-      val usedNames: Set[String] =
+      if (body == null)
         // - I do renounce him.
+        sys error (
+          "Name query on incomplete binder: " +
+            s"${getClass.getSimpleName}($defaultName, null)"
+        )
+      // - And all his works?
+      val usedNames: Set[String] =
         body.traverse.flatMap({
-          // - And all his works?
+          // - I do renounce them.
           case binder: Binder => Some(binder.name)
           case _ => None
         })(collection.breakOut)
-      // - I do renounce them.
       var myName = defaultName
       var startingIndex = -1
       var i = startingIndex
@@ -141,46 +159,28 @@ trait NameBindingLanguage {
       myName
     }
 
-    // encoding paramorphisms over an unknown functor
-    // by... mutation!
-    private trait Status
-    private case object IDontKnow extends Status
-    private case object Looking extends Status
-
-    private var myHashCode: Int = 0
-    private var myHashStatus: Status = IDontKnow
-
-    override lazy val hashCode: Int = myHashStatus match {
-      case Looking => myHashCode
-      case IDontKnow =>
-        myHashStatus = Looking
-        myHashCode   = MurmurHash3.seqHash(List(
-          getClass.hashCode,
-          body.hashCode
-        ))
-        myHashCode
-    }
-
-    private var comparingTo: Binder = null
-    private var eqStatus: Status = IDontKnow
+    override val hashCode: Int = Binder.nextHashCode
 
     override def equals(other: Any): Boolean = other match {
-      case other: Binder => other eq this
-        eqStatus match {
-          case Looking =>
-            comparingTo eq other
-          case IDontKnow =>
-            comparingTo = other
-            eqStatus    = Looking
-            val result  = body equals other.body
-            comparingTo = null
-            eqStatus    = IDontKnow
-            result
-        }
-
+      case other: Binder => other eq this // s.t. other: AnyRef
       case _ => false
     }
+
+    override def toString: String =
+      s"${getClass.getSimpleName}($name, $body)"
   }
+
+  object Binder {
+    private[NameBindingLanguage]
+    var thisHashCode: Int = -1
+
+    def nextHashCode(): Int = {
+      thisHashCode += 1
+      thisHashCode
+    }
+  }
+
+  def prettyMorphism(t: ADT, s: => Functor[String]): String = t.toString
 }
 
 trait Syntax extends NameBindingLanguage {
@@ -189,12 +189,15 @@ trait Syntax extends NameBindingLanguage {
     case ConF(stant)   => ConF(stant)
     case AppF(fn, arg) => AppF(f(fn), f(arg))
     case VarF(binder)  => VarF(binder)
-    //case Abs(x, body) => Abs._Abs(x, f(body))
+    case AbsF(x, body) => AbsF(x, f(body))
     case otherwise    => super.fmap(f)(otherwise)
   }
 
-  case class AbsF[T](var binder: Binder, var body: T) extends Functor[T]
-  { def toADT: ADT = binder }
+  case class AbsF[T](var binder: Binder, var body: T) extends Functor[T] {
+    def toADT: ADT = body match {
+      case body: ADT => Abs.replaceBody(binder, body)
+    }
+  }
   class Abs(body: ADT) extends AbsF[ADT](null, body) with Binder
   object Abs extends BinderFactory[Abs]
   { def newBinder(): Abs = new Abs(null) }
@@ -215,7 +218,7 @@ trait Syntax extends NameBindingLanguage {
   class App(fun: ADT, arg: ADT) extends AppF[ADT](fun, arg) with ADT
   object App {
     def apply(fun: ADT, arg: ADT): App = new App(fun, arg)
-    def unapply(a: App): Option[(ADT, ADT)] = Some(a.fun, a.arg)
+    def unapply(a: App): Option[(ADT, ADT)] = Some((a.fun, a.arg))
   }
 
   case class ConF[T](stant: String) extends Functor[T]
@@ -225,6 +228,15 @@ trait Syntax extends NameBindingLanguage {
     def apply(stant: String): Con = new Con(stant)
     def unapply(c: Con): Option[String] = Some(c.stant)
   }
+
+  override def prettyMorphism(t: ADT, f: => Functor[String]): String =
+    f match {
+      case ConF(stant)   => stant
+      case VarF(x)       => x.binder.name
+      case AbsF(x, body) => s"(λ${x.name}. $body)"
+      case AppF(fn, arg) => s"($fn $arg)"
+      case _             => super.prettyMorphism(t, f)
+    }
 
   implicit def stringToGlobalConstant(s: String): ADT = Con(s)
 }
@@ -291,45 +303,66 @@ trait Values {
   }
 }
 
-/*
-trait LambdaCalculus extends Syntax with Values {
-  def eval(t: ADT): Val = t para morphicEval
-
-  def morphicEval: (ADT, Functor[Val]) => Val = {
-    case (ADT(abs: Abs._Abs[_]), _) =>
-      Fun(abs paramorphicFun morphicEval)
-
-    case (_, Con(s)) =>
-      lookupVal(s)
-
-    case (_, App(f, x)) =>
-      f(x)
-
-    case (_, Var(_)) =>
-      Placeholder
-
-    case (x, _) =>
-      sys error s"No clue how to evaluate $x"
+trait ValueSemantics extends Syntax with Values {
+  def eval(t: ADT): Val = {
+    def withEnv(t: ADT) = t fold evalAlgebra
+    withEnv(t)(Map.empty[Binder, Val])
   }
 
-  def pretty(t: ADT): String = t para morphicPretty
-
-  /** extension point: pretty print */
-  def morphicPretty: (ADT, Functor[String]) => String = {
-    case (Con(s), _)  => s
-    case (Var(x), _)  => x.name
-    case (Abs(x, body), _) => s"(λ$x. ${body para morphicPretty})"
-    case (_, App(fn, arg)) => s"($fn $arg)"
-    case x => sys error s"No clue how to pretty-print $x"
+  /** extension point: evaluation operation */
+  def evalAlgebra: Algebra[Env[Val] => Val] = {
+    case ConF(s)       => _ => lookupVal(s)
+    case VarF(x)       => _(x)
+    case AppF(fn, arg) => env => fn(env)(arg(env))
+    case AbsF(x, body) => env => Fun {
+      v => body(({ case y if x == y => v }: Env[Val]) orElse env)
+    }
   }
 }
 
-class Test extends LambdaCalculus {
+trait ReductionSemantics extends Syntax {
+  type Reduction = Algebra[ADT]
+
+  val beta: Reduction = {
+    case AppF(f: Abs, arg) => f(arg)
+  }
+
+  val mu: Reduction = {
+    case AppF(Con("fix"), f) => App(f, App(Con("fix"), f))
+  }
+
+  val delta: Reduction =
+    liftOp2("+", _+_) orElse liftOp2("-", _-_) orElse
+    liftOp2("*", _*_) orElse liftOp2("/", _/_)
+
+  def eval(t: ADT): ADT = leftMostOuterMost(t).fold(t)(eval)
+
+  def leftMostOuterMost(t: ADT): Option[ADT] = {
+    ((beta orElse mu orElse delta) andThen Some.apply).
+      applyOrElse[ADT, Option[ADT]](
+        t, {
+          case App(fun, arg) =>
+            leftMostOuterMost(fun) map { f => App(f, arg) }
+          case _ =>
+            None
+        })
+  }
+
+  def liftOp2(symbol: String, op: (Int, Int) => Int): Reduction = {
+    case AppF(App(Con(opName), Con(lhs)), Con(rhs))
+        if opName == symbol =>
+      Con((op(lhs.toInt, rhs.toInt)).toString)
+  }
+}
+
+trait TestSubjects extends Syntax {
   val twoPlusTwo: ADT = App(App("+", "2"), "2")
 
   val id: ADT = Abs { x => Var(x) }
 
   val const: ADT = Abs { x => Abs { y => Var(x) } }
+
+  val auto: ADT = Abs { x => App(Var(x), Var(x)) }
 
   val sum: ADT =
      App(
@@ -348,21 +381,59 @@ class Test extends LambdaCalculus {
           Abs(_ => App(App("*", Var(n)),
                      App(Var(f), App(App("-", Var(n)), "1")))))))),
       "5")
-
-
-  def test(t: => ADT) {
-    println(s"${pretty(t)} = ${eval(t)}")
-    println()
-  }
-
-  test(twoPlusTwo)
-  test(id)
-  test(const)
-
-  // fix-point operator doesn't work yet.
-  println(pretty(sum))
-  println(pretty(fac))
 }
 
-new Test
-*/
+trait Test extends TestSubjects {
+  type Domain
+
+  def eval(t: ADT): Domain
+
+  def test(t: => ADT) {
+    println(s"${t.pretty} = ${eval(t)}\n")
+  }
+
+  def testAcyclic() {
+    test(twoPlusTwo)
+    test(const)
+    test(App(id, Con("19")))
+    test(App(const, Con("97")))
+    test(App(App(const, id), Con("71")))
+    test(App(id, id))
+    test(App(Con("fix"), Abs { _ => Con("1997") }))
+  }
+
+  def testRecurse() {
+    test(sum)
+    test(fac)
+  }
+
+  def testSelfApp() {
+    test(auto)
+    test(App(auto, id))
+    // TODO: value semantics fails on what's below.
+    test(App(auto, auto))
+    test(App(App(App(auto, auto), id), Con("42")))
+  }
+
+  def testAll() {
+    testAcyclic()
+    testRecurse()
+    testSelfApp()
+  }
+}
+
+object TestSemantics {
+  def main(args: Array[String]){
+    // failing tests are commented out
+
+    val v = new Test with ValueSemantics    { type Domain = Val }
+    val r = new Test with ReductionSemantics{ type Domain = ADT }
+    v.testAcyclic
+    v.testRecurse
+    // v.testSelfApp
+
+    r.testAcyclic
+    // r.testRecurse
+    // r.testSelfApp
+  }
+}
