@@ -51,8 +51,8 @@ trait NameBindingLanguage {
 
     def subst(env: Env[ADT]): ADT = para[ADT] { (before, after) =>
       before match {
-        case before: Binder if env isDefinedAt before =>
-          before // do not descend if name is rebound (by self)
+        case binder: Binder if env isDefinedAt binder =>
+          binder // do not descend if name is rebound (by self)
         case _ => after match {
           case y: Bound[_] if env.isDefinedAt(y.binder) => env(y.binder)
           case otherwise => otherwise.toADT
@@ -95,17 +95,18 @@ trait NameBindingLanguage {
 
   trait BinderFactory[T <: Binder] {
     def newBinder(): T
+    def bound(binder: Binder): ADT with Bound[ADT]
 
-    def apply(body: Binder => ADT): T = {
+    def apply(body: ADT => ADT): T = {
       val binder = newBinder
-      binder.body = body(binder)
+      binder.body = body(bound(binder))
       binder
     }
 
-    def apply(defaultName: String)(body: Binder => ADT): T = {
+    def apply(defaultName: String)(body: ADT => ADT): T = {
       val binder = newBinder
       binder.defaultName = defaultName
-      binder.body = body(binder)
+      binder.body = body(bound(binder))
       binder
     }
 
@@ -145,10 +146,7 @@ trait NameBindingLanguage {
       // - Do you renounce Satan?
       if (body == null)
         // - I do renounce him.
-        sys error (
-          "Name query on incomplete binder: " +
-            s"${getClass.getSimpleName}($defaultName, null)"
-        )
+        sys error s"${getClass.getSimpleName}($defaultName, $body)"
       // - And all his works?
       val usedNames: Set[String] =
         body.traverse.flatMap({
@@ -213,13 +211,19 @@ trait Syntax extends NameBindingLanguage {
       case body: ADT => Abs.replaceBody(binder, body)
     }
   }
-  class Abs(body: ADT) extends AbsF[ADT](null, body) with Binder
-  object Abs extends BinderFactory[Abs]
-  { def newBinder(): Abs = new Abs(null) }
+  class Abs(body: ADT) extends AbsF[ADT](null, body) with Binder {
+    override def toADT = this
+  }
+  object Abs extends BinderFactory[Abs] {
+    def newBinder(): Abs = new Abs(null)
+    def bound(binder: Binder): Var = Var(binder)
+  }
 
   case class VarF[T](binder: Binder) extends Bound[T]
   { def toADT: ADT = Var(binder) }
-  class Var(binder: Binder) extends VarF[ADT](binder) with ADT
+  class Var(binder: Binder) extends VarF[ADT](binder) with ADT {
+    override def toADT = this
+  }
   object Var {
     def apply(binder: Binder): Var = new Var(binder)
     def unapply(v: Var): Option[Binder] = Some(v.binder)
@@ -230,7 +234,10 @@ trait Syntax extends NameBindingLanguage {
       case (fun: ADT, arg: ADT) => App(fun, arg)
     }
   }
-  class App(fun: ADT, arg: ADT) extends AppF[ADT](fun, arg) with ADT
+  class App(fun: ADT, arg: ADT) extends AppF[ADT](fun, arg) with ADT {
+    override def toString: String =
+      s"${getClass.getSimpleName}($fun, $arg)"
+  }
   object App {
     def apply(fun: ADT, arg: ADT): App = new App(fun, arg)
     def unapply(a: App): Option[(ADT, ADT)] = Some((a.fun, a.arg))
@@ -238,7 +245,10 @@ trait Syntax extends NameBindingLanguage {
 
   case class ConF[T](stant: String) extends Functor[T]
   { def toADT: ADT = Con(stant) }
-  class Con(stant: String) extends ConF[ADT](stant) with ADT
+  class Con(stant: String) extends ConF[ADT](stant) with ADT {
+    override def toString: String =
+      s"${getClass.getSimpleName}($stant)"
+  }
   object Con {
     def apply(stant: String): Con = new Con(stant)
     def unapply(c: Con): Option[String] = Some(c.stant)
@@ -281,20 +291,11 @@ trait Values {
 
   // fixed point of functions
   case class Fix(f: Val) extends Val {
-    def apply(v: Val): Val = f match {
-      case Fun(f) => f(this)(v)
-      case _ => Placeholder
-    }
-  }
-
-  // placeholder
-  case object Placeholder extends Val {
-    def apply(arg: Val): Val = this
+    def apply(v: Val): Val = f(this)(v)
   }
 
   def liftVal2(f: (Int, Int) => Int): Fun = Fun {
     case Num(m) => Fun { case Num(n) => Num(f(m, n)) }
-    case _ => Placeholder
   }
 
   def lookupVal(s: String) = s match {
@@ -338,6 +339,13 @@ trait ValueSemantics extends Syntax with Values {
 trait ReductionSemantics extends Syntax {
   type Reduction = Algebra[ADT]
 
+  override def fmap[T, R](f: T => R): Functor[T] => Functor[R] = {
+    case TT() => TT()
+    case otherwise => super.fmap(f)(otherwise)
+  }
+  case class TT[T]() extends Functor[T] { def toADT = TT }
+  object TT extends TT[ADT]() with ADT
+
   val beta: Reduction = {
     case AppF(f: Abs, arg) => f(arg)
   }
@@ -348,7 +356,15 @@ trait ReductionSemantics extends Syntax {
 
   val delta: Reduction =
     liftOp2("+", _+_) orElse liftOp2("-", _-_) orElse
-    liftOp2("*", _*_) orElse liftOp2("/", _/_)
+    liftOp2("*", _*_) orElse liftOp2("/", _/_) orElse {
+      case AppF(Con("if0"), n) => eval(n) match {
+        case Con(n) =>
+          if (n.toInt == 0)
+            Abs("then") { t => Abs("else") { e => App(t, TT) } }
+          else
+            Abs("then") { t => Abs("else") { e => App(e, TT) } }
+      }
+    }
 
   def eval(t: ADT): ADT = leftMostOuterMost(t).fold(t)(eval)
 
@@ -364,37 +380,40 @@ trait ReductionSemantics extends Syntax {
   }
 
   def liftOp2(symbol: String, op: (Int, Int) => Int): Reduction = {
-    case AppF(App(Con(opName), Con(lhs)), Con(rhs))
+    case AppF(App(Con(opName), lhs), rhs)
         if opName == symbol =>
-      Con((op(lhs.toInt, rhs.toInt)).toString)
+      (eval(lhs), eval(rhs)) match {
+        case (Con(lhs), Con(rhs)) =>
+          Con((op(lhs.toInt, rhs.toInt)).toString)
+      }
   }
 }
 
 trait TestSubjects extends Syntax {
   val twoPlusTwo: ADT = App(App("+", "2"), "2")
 
-  val id: ADT = Abs { x => Var(x) }
+  val id: ADT = Abs { x => x }
 
-  val const: ADT = Abs { x => Abs { y => Var(x) } }
+  val const: ADT = Abs("x") { x => Abs("y") { y => x } }
 
-  val auto: ADT = Abs { x => App(Var(x), Var(x)) }
+  val auto: ADT = Abs { x => App(x, x) }
 
   val sum: ADT =
      App(
-       App("fix", Abs(f => Abs(n =>
-         App(App(App("if0", Var(n)),
-           Abs(_ => "0")),
-           Abs(_ => App(App("+", Var(n)),
-                      App(Var(f), App(App("-", Var(n)), "1")))))))),
+       App("fix", Abs("f")(f => Abs("n")(n =>
+         App(App(App("if0", n),
+           Abs("_")(_ => "0")),
+           Abs("_")(_ => App(App("+", n),
+                      App(f, App(App("-", n), "1")))))))),
      "10")
 
   val fac: ADT =
     App(
-      App("fix", Abs(f => Abs(n =>
-        App(App(App("if0", Var(n)),
-          Abs(_ => "1")),
-          Abs(_ => App(App("*", Var(n)),
-                     App(Var(f), App(App("-", Var(n)), "1")))))))),
+      App("fix", Abs("f")(f => Abs("n")(n =>
+        App(App(App("if0", n),
+          Abs("_")(_ => "1")),
+          Abs("_")(_ => App(App("*", n),
+                     App(f, App(App("-", n), "1")))))))),
       "5")
 }
 
@@ -414,10 +433,11 @@ trait Test extends TestSubjects {
     test(App(const, Con("97")))
     test(App(App(const, id), Con("71")))
     test(App(id, id))
-    test(App(Con("fix"), Abs { _ => Con("1997") }))
   }
 
   def testRecurse() {
+    test(App(Con("fix"), Abs("f") { f => Con("1997") }))
+    test(App(Con("fix"), Abs("f") { f => Abs { x => x } }))
     test(sum)
     test(fac)
   }
@@ -437,8 +457,6 @@ trait Test extends TestSubjects {
 
 object TestSemantics {
   def main(args: Array[String]){
-    // failing tests are commented out
-
     val v = new Test with ValueSemantics    { type Domain = Val }
     val r = new Test with ReductionSemantics{ type Domain = ADT }
     v.testAcyclic
@@ -446,7 +464,7 @@ object TestSemantics {
     v.testSelfApp
 
     r.testAcyclic
-    // r.testRecurse
+    r.testRecurse
     r.testSelfApp
   }
 }
