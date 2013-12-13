@@ -12,16 +12,18 @@ trait NameBindingLanguage {
 
   trait Functor[T] {
     def map[R](f: T => R) = fmap(f)(this)
+
+    def toADT: ADT
   }
 
   object ADT {
     // anamorphism
-    def ana[T](psi: Coalgebra[T])(x: T): ADT = ADT(psi(x) map (ana(psi)))
+    def ana[T](psi: Coalgebra[T])(x: T): ADT = (psi(x) map (ana(psi))).toADT
   }
 
-  case class ADT(unroll: Functor[ADT]) extends Functor[ADT] {
+  trait ADT extends Functor[ADT] {
     // catamorphism
-    def fold[T](f: Algebra[T]): T = f(unroll map (_ fold f))
+    def fold[T](f: Algebra[T]): T = f(this map (_ fold f))
 
     // paramorphism
     def para[T](f: (ADT, Functor[T]) => T): T = {
@@ -34,6 +36,14 @@ trait NameBindingLanguage {
       }
     }
 
+    def subst(from: Binder, to: ADT): ADT = fold[ADT] {
+      case y: Bound[_] if y.binder == from => to
+      case otherwise => otherwise.toADT
+    }
+
+    //def subst(env: Env[ADT]): ADT =
+
+    /** gives a list of ADTs in traversal order */
     def traverse: List[ADT] = {
       // We cheat out of the boilerplates of yet another functor
       // by mutation. Mutation is the back door to escape to
@@ -46,7 +56,7 @@ trait NameBindingLanguage {
       var traversed: List[ADT] = Nil
       fold[ADT] {
         case s: Functor[ADT] =>
-          val visiting = ADT(s)
+          val visiting = s.toADT
           traversed = visiting :: traversed
           visiting
       }
@@ -56,77 +66,75 @@ trait NameBindingLanguage {
 
   // What... a name-binding language?!
 
+  type Env[T] = PartialFunction[Binder, T]
+
   // Note the lack of type recursion here
   trait Bound[T] extends Functor[T] {
-    def binder: Binder[ADT]
+    def binder: Binder
     override def toString: String = binder.name
   }
 
-  trait Binder[T] extends Functor[T] {
-    def defaultName: String
-    var body: T
+  trait BinderFactory[T <: Binder] {
+    def newBinder(): T
 
-    def toHOAS: ADT => ADT = algebraicFun[ADT] { case x => ADT(x) }
-
-    // Maybe a trampoline's what's needed here...
-    // Consider rewrite again sans categorical flair.
-
-    def algebraicFun[T](algebra: Algebra[T]): T => T = x => body match {
-      case body: ADT => replaceMe(x, algebra, body)
+    def apply(body: Binder => ADT): T = {
+      val binder = newBinder
+      binder.body = body(binder)
+      binder
     }
 
-    def paramorphicFun[T](morphism: (ADT, Functor[T]) => T): T => T =
-      x => body match {
-        case body: ADT => replaceMe(x, morphism, body)
-      }
-
-    lazy val name: String = body match {
-      case body: ADT => christianMe(body)
+    def apply(defaultName: String)(body: Binder => ADT): T = {
+      val binder = newBinder
+      binder.defaultName = defaultName
+      binder.body = body(binder)
+      binder
     }
 
-    private
-    def replaceMe[T](x: T, algebra: Algebra[T], body: ADT) =
-      body.fold[T] {
-        // can't believe I resort to string comparison at the end...
-        // somehow reference equality doesn't work.
-        case y: Bound[_] if y.binder.name eq this.name => x
-        case otherwise => algebra(otherwise)
-      }
+    def unapply(b: T): Option[(Binder, ADT)] = Some((b.binder, b.body))
+  } 
 
-    private
-    def replaceMe[T](x: T, morphism: (ADT, Functor[T]) => T, body: ADT) =
-      body.para[T] {
-        // downgrading to string comparison is ridiculous.
-        // maybe we should do this "member case object" thing?
-        // but if reference comparison always fails, could
-        // inner case object identity possibly succeed?
-        case (_, y: Bound[_]) if y.binder.name == this.name => x
-        case (z, f) => morphism(z, f)
-      }
+  trait Binder extends ADT {
+    // inherited from case class
+    var binder: Binder
+    var body: ADT
 
-    private
-    def christianMe(body: ADT): String = {
+    // cleverly loop to self
+    binder = this
+
+    lazy val name: String = "???"
+
+    def toHoas: ADT => ADT = toFun[ADT] { case x => x.toADT }
+
+    def toFun[T](algebra: Algebra[T]): T => T = x => body.fold[T] {
+      case y: Bound[_] if y.binder eq this => x
+      case otherwise => algebra(otherwise)
+    }
+
+    private[NameBindingLanguage]
+    var defaultName: String = "x"
+
+    private def christianMe(body: ADT): String = {
       // - Do you renounce Satan?
-      // - I do renounce him.
       val usedNames: Set[String] =
-        // - And all his works?
+        // - I do renounce him.
         body.traverse.flatMap({
-          // - I do renounce them.
-          case ADT(binder: Binder[_]) => Some(binder.name)
+          // - And all his works?
+          case binder: Binder => Some(binder.name)
           case _ => None
         })(collection.breakOut)
+      // - I do renounce them.
       var myName = defaultName
       var startingIndex = -1
       var i = startingIndex
       // - And all his pomps?
       while (usedNames contains myName) {
-        // - I do renounce them.
         i = i + 1
+        // - I do renounce them.
         if (i == startingIndex)
           sys error "oops, I've renounced everything."
         myName = defaultName + i
+        // - Will you be baptized?
       }
-      // - Will you be baptized?
       // - I will.
       // - In nomine Patri, et Filii, et Spiritus Sancti,
       //   Michael Rizzi, go in peace.
@@ -153,47 +161,24 @@ trait NameBindingLanguage {
         myHashCode
     }
 
-    private var comparingTo: Binder[T] = null
+    private var comparingTo: Binder = null
     private var eqStatus: Status = IDontKnow
 
     override def equals(other: Any): Boolean = other match {
-      case other: Binder[T] =>
+      case other: Binder => other eq this
         eqStatus match {
+          case Looking =>
+            comparingTo eq other
           case IDontKnow =>
             comparingTo = other
             eqStatus    = Looking
-            val result  = equals(other)
+            val result  = body equals other.body
             comparingTo = null
             eqStatus    = IDontKnow
             result
-          case Looking =>
-            comparingTo eq other
         }
 
       case _ => false
-    }
-  }
-
-  trait BinderFactory {
-    def newBinder(defaultName: String): Binder[ADT]
-    def extractBinder[T](e: Functor[T]): Option[(Binder[T], T)]
-
-    def apply(body: Binder[ADT] => ADT): ADT = apply("x")(body)
-
-    def apply(defaultName: String)(body: Binder[ADT] => ADT): ADT = {
-      val result = newBinder(defaultName)
-      result.body = body(result)
-      ADT(result)
-    }
-
-    def unapply[T](e: Functor[T]): Option[(String, T)] = {
-      val maybe: Option[(Binder[T], T)] = e match {
-        case ADT(unroll) => extractBinder[ADT](unroll)
-        case _           => extractBinder(e)
-      }
-      maybe map {
-        case (binder, result) => (binder.name, result)
-      }
     }
   }
 }
@@ -201,70 +186,47 @@ trait NameBindingLanguage {
 trait Syntax extends NameBindingLanguage {
   override
   def fmap[T, R](f: T => R): Functor[T] => Functor[R] = {
-    case Con(s)       => Con._Con(s)
-    case Var(x)       => Var._Var(x)
-    case Abs(x, body) => Abs._Abs(x, f(body))
-    case App(fn, arg) => App._App(f(fn), f(arg))
+    case ConF(stant)   => ConF(stant)
+    case AppF(fn, arg) => AppF(f(fn), f(arg))
+    case VarF(binder)  => VarF(binder)
+    //case Abs(x, body) => Abs._Abs(x, f(body))
     case otherwise    => super.fmap(f)(otherwise)
   }
 
-  implicit def stringToGlobalConstant(s: String): ADT = Con(s)
+  case class AbsF[T](var binder: Binder, var body: T) extends Functor[T]
+  { def toADT: ADT = binder }
+  class Abs(body: ADT) extends AbsF[ADT](null, body) with Binder
+  object Abs extends BinderFactory[Abs]
+  { def newBinder(): Abs = new Abs(null) }
 
-  object Con {
-    case class _Con[T](x: String) extends Functor[T]
-    def apply(x: String): ADT = ADT(_Con(x))
-    def unapply[T](e: Functor[T]): Option[String] = e match {
-      case ADT(unroll) => unapplyUnrolled(unroll)
-      case _           => unapplyUnrolled(e)
-    }
-
-    private[this]
-    def unapplyUnrolled[T](e: Functor[T]): Option[String] = e match {
-      case i: _Con[T] => _Con.unapply(i)
-      case _          => None
-    }
-  }
-
+  case class VarF[T](binder: Binder) extends Bound[T]
+  { def toADT: ADT = Var(binder) }
+  class Var(binder: Binder) extends VarF[ADT](binder) with ADT
   object Var {
-    case class _Var[T](binder: Binder[ADT]) extends Bound[T]
-    def apply(x: Binder[ADT]): ADT = ADT(_Var(x))
-    def unapply[T](e: Functor[T]): Option[Binder[ADT]] = e match {
-      case ADT(unroll) => unapplyUnrolled(unroll)
-      case _           => unapplyUnrolled(e)
-    }
-
-    private[this]
-    def unapplyUnrolled[T](e: Functor[T]): Option[Binder[ADT]] = e match {
-      case i: _Var[T] => _Var.unapply(i)
-      case _          => None
-    }
+    def apply(binder: Binder): Var = new Var(binder)
+    def unapply(v: Var): Option[Binder] = Some(v.binder)
   }
 
+  case class AppF[T](fun: T, arg: T) extends Functor[T] {
+    def toADT: ADT = (fun, arg) match {
+      case (fun: ADT, arg: ADT) => App(fun, arg)
+    }
+  }
+  class App(fun: ADT, arg: ADT) extends AppF[ADT](fun, arg) with ADT
   object App {
-    case class _App[T](fn: T, arg: T) extends Functor[T]
-    def apply(fn: ADT, arg: ADT): ADT = ADT(_App(fn, arg))
-    def unapply[T](e: Functor[T]): Option[(T, T)] = e match {
-      case ADT(unroll) => unapplyUnrolled(unroll)
-      case _           => unapplyUnrolled(e)
-    }
-
-    private[this]
-    def unapplyUnrolled[T](e: Functor[T]): Option[(T, T)] = e match {
-      case i: _App[T] => _App.unapply(i)
-      case _          => None
-    }
+    def apply(fun: ADT, arg: ADT): App = new App(fun, arg)
+    def unapply(a: App): Option[(ADT, ADT)] = Some(a.fun, a.arg)
   }
 
-  object Abs extends BinderFactory {
-    case class _Abs[T](defaultName: String, var body: T) extends Binder[T]
-    def newBinder(defaultName: String): Binder[ADT] =
-        _Abs[ADT](defaultName, null)
-    def extractBinder[T](e: Functor[T]): Option[(Binder[T], T)] =
-      e match {
-        case i: _Abs[T] => _Abs.unapply(i) map (x => (i, x._2))
-        case _          => None
-      }
+  case class ConF[T](stant: String) extends Functor[T]
+  { def toADT: ADT = Con(stant) }
+  class Con(stant: String) extends ConF[ADT](stant) with ADT
+  object Con {
+    def apply(stant: String): Con = new Con(stant)
+    def unapply(c: Con): Option[String] = Some(c.stant)
   }
+
+  implicit def stringToGlobalConstant(s: String): ADT = Con(s)
 }
 
 // copied from cata.scala
@@ -329,6 +291,7 @@ trait Values {
   }
 }
 
+/*
 trait LambdaCalculus extends Syntax with Values {
   def eval(t: ADT): Val = t para morphicEval
 
@@ -402,3 +365,4 @@ class Test extends LambdaCalculus {
 }
 
 new Test
+*/
