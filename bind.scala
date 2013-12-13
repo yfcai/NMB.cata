@@ -99,11 +99,8 @@ trait NameBindingLanguage {
       else
         hardReplaceBody(binder, body)
 
-    def hardReplaceBody(binder: Binder, body: ADT): Binder = {
-      val binder2 = apply { x => body.subst(binder, x) }
-      binder2.defaultName = binder.defaultName
-      binder2
-    }
+    def hardReplaceBody(binder: Binder, body: ADT): Binder =
+      apply(binder.defaultName) { x => body.subst(binder, x) }
   }
 
   trait Binder extends ADT {
