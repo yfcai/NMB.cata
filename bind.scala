@@ -15,6 +15,23 @@ trait NameBindingLanguage {
     def toADT: ADT
   }
 
+  case class ParaADT(functor: Functor[(ADT, ParaADT)]) {
+    def fold[T](f: (=> ADT, => Functor[T]) => T): T =
+      f(functor.map(_._1).toADT, functor map { _._2 fold f})
+  }
+
+  object ParaADT {
+    def apply(adt: ADT): ParaADT = {
+      var traversed = adt.traverse
+      adt.fold[(ADT, ParaADT)]({
+        case functor =>
+          val result = (traversed.head, ParaADT(functor))
+          traversed = traversed.tail
+          result
+      })._2
+    }
+  }
+
   object ADT {
     // anamorphism
     def ana[T](psi: Coalgebra[T])(x: T): ADT = (psi(x) map (ana(psi))).toADT
@@ -24,22 +41,23 @@ trait NameBindingLanguage {
     // catamorphism
     def fold[T](f: Algebra[T]): T = f(this map (_ fold f))
 
-    // paramorphism
-    def para[T](f: (ADT, => Functor[T]) => T): T = {
-      var traversed = traverse
-      fold[T] {
-        case s: Functor[T] =>
-          val result = f(traversed.head, s)
-          traversed = traversed.tail
-          result
-      }
-    }
+    // paramorphism.
+    // if a normal function (not a case function) is given as argument,
+    // then para does not recurse unless necessary.
+    // this is important if the ADT has a cycle.
+    def para[T](f: (=> ADT, => Functor[T]) => T): T = ParaADT(this) fold f
 
     def subst(from: Binder, to: ADT): ADT = subst(Map(from -> to))
 
-    def subst(env: Env[ADT]): ADT = fold[ADT] {
-      case y: Bound[_] if env.isDefinedAt(y.binder) => env(y.binder)
-      case otherwise => otherwise.toADT
+    def subst(env: Env[ADT]): ADT = para[ADT] { (before, after) =>
+      before match {
+        case before: Binder if env isDefinedAt before =>
+          before // do not descend if name is rebound (by self)
+        case _ => after match {
+          case y: Bound[_] if env.isDefinedAt(y.binder) => env(y.binder)
+          case otherwise => otherwise.toADT
+        }
+      }
     }
 
     def pretty: String = para(prettyMorphism)
@@ -177,7 +195,7 @@ trait NameBindingLanguage {
     }
   }
 
-  def prettyMorphism(t: ADT, s: => Functor[String]): String = t.toString
+  def prettyMorphism(t: => ADT, s: => Functor[String]): String = t.toString
 }
 
 trait Syntax extends NameBindingLanguage {
@@ -226,7 +244,7 @@ trait Syntax extends NameBindingLanguage {
     def unapply(c: Con): Option[String] = Some(c.stant)
   }
 
-  override def prettyMorphism(t: ADT, f: => Functor[String]): String =
+  override def prettyMorphism(t: => ADT, f: => Functor[String]): String =
     f match {
       case ConF(stant)   => stant
       case VarF(x)       => x.binder.name
