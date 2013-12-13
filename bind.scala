@@ -407,9 +407,7 @@ trait Test extends TestSubjects {
   def testSelfApp() {
     test(auto)
     test(App(auto, id))
-    // TODO: value semantics fails on what's below.
-    test(App(auto, auto))
-    test(App(App(App(auto, auto), id), Con("42")))
+    test(App(App(App(auto, App(auto, id)), id), Con("42")))
   }
 
   def testAll() {
@@ -427,10 +425,10 @@ object TestSemantics {
     val r = new Test with ReductionSemantics{ type Domain = ADT }
     v.testAcyclic
     v.testRecurse
-    // v.testSelfApp
+    v.testSelfApp
 
     r.testAcyclic
     // r.testRecurse
-    // r.testSelfApp
+    r.testSelfApp
   }
 }
