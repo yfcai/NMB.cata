@@ -199,9 +199,7 @@ trait Syntax extends NameBindingLanguage {
       case body: ADT => Abs.replaceBody(binder, body)
     }
   }
-  class Abs(body: ADT) extends AbsF[ADT](null, body) with Binder {
-    override def toADT = this
-  }
+  class Abs(body: ADT) extends AbsF[ADT](null, body) with Binder
   object Abs extends BinderFactory[Abs] {
     def newBinder(): Abs = new Abs(null)
     def bound(binder: Binder): Var = Var(binder)
@@ -209,9 +207,7 @@ trait Syntax extends NameBindingLanguage {
 
   case class VarF[T](binder: Binder) extends Bound[T]
   { def toADT: ADT = Var(binder) }
-  class Var(binder: Binder) extends VarF[ADT](binder) with ADT {
-    override def toADT = this
-  }
+  class Var(binder: Binder) extends VarF[ADT](binder) with ADT
   object Var {
     def apply(binder: Binder): Var = new Var(binder)
     def unapply(v: Var): Option[Binder] = Some(v.binder)
