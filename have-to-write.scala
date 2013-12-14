@@ -102,12 +102,6 @@ trait LambdaTerms {
     def unapply(b: T): Option[(Binder, Term)] = Some((b.binder, b.body))
 
     def replaceBody(binder: Binder, body: Term): Binder =
-      if (binder.body == body)
-        binder
-      else
-        hardReplaceBody(binder, body)
-
-    def hardReplaceBody(binder: Binder, body: Term): Binder =
       apply(binder.defaultName) { x => body.subst(binder, x) }
   }
 
@@ -115,7 +109,8 @@ trait LambdaTerms {
     // inherited from case class.
     // although the fields "binder" and "body" should be mutated
     // nowhere but here, we can't make them private to LambdaTerm
-    // because the case class has to "okay" their mutatability.
+    // because each new case class (for a binder) defined elsewhere
+    // has to "okay" their mutability.
     var binder: Binder
     var body: Term
 

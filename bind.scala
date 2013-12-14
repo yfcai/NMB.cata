@@ -107,12 +107,6 @@ trait NameBindingLanguage {
     def unapply(b: T): Option[(Binder, ADT)] = Some((b.binder, b.body))
 
     def replaceBody(binder: Binder, body: ADT): Binder =
-      if (binder.body == body)
-        binder
-      else
-        hardReplaceBody(binder, body)
-
-    def hardReplaceBody(binder: Binder, body: ADT): Binder =
       apply(binder.defaultName) { x => body.subst(binder, x) }
   }
 
