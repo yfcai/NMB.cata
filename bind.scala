@@ -20,6 +20,8 @@ trait NameBindingLanguage {
       f(functor.map(_._1).toADT, functor map { _._2 fold f})
   }
 
+  // We cheat out of the boilerplates of yet another functor
+  // by mutation.
   object ParaADT {
     def apply(adt: ADT): ParaADT = {
       var traversed = adt.traverse
@@ -49,10 +51,10 @@ trait NameBindingLanguage {
 
     def subst(from: Binder, to: ADT): ADT = subst(Map(from -> to))
 
-    def subst(env: Env[ADT]): ADT = para[ADT] { (before, after) =>
+    def subst(env: Map[Binder, ADT]): ADT = para[ADT] { (before, after) =>
       before match {
         case binder: Binder if env isDefinedAt binder =>
-          binder // do not descend if name is rebound (by self)
+          binder subst (env - binder)
         case _ => after match {
           case y: Bound[_] if env.isDefinedAt(y.binder) => env(y.binder)
           case otherwise => otherwise.toADT
@@ -64,14 +66,6 @@ trait NameBindingLanguage {
 
     /** gives a list of ADTs in traversal order */
     def traverse: List[ADT] = {
-      // We cheat out of the boilerplates of yet another functor
-      // by mutation. Mutation is the back door to escape to
-      // Turing completeness---and in Hardin's words, the last
-      // refuge of the incompetent (or impatient). If the
-      // language support of something isn't perfect (and it is
-      // rarely the case for everything), wouldn't it make more
-      // sense to leave the option open for a less robust
-      // solution, instead of forbidding it altogether?
       var traversed: List[ADT] = Nil
       fold[ADT] {
         case s: Functor[ADT] =>
