@@ -1,20 +1,29 @@
 import scala.language.implicitConversions
 
+/** Name binding language trait on top of catamorphisms */
+
 trait NameBindingLanguage {
-  type Algebra  [T] = PartialFunction[Functor[T], T]
-  type Coalgebra[T] = PartialFunction[T, Functor[T]]
 
-  /** extension point: adding new data types */
-  def fmap[T, R](f: T => R): Functor[T] => Functor[R] = {
-    case x => sys error s"No clue how to map over $x"
-  }
+  // ALGEBRAIC DATA TYPE AS FIXED POINT OF A FUNCTOR
 
+  /** the functor whose fixed point is the algebraic data type */
   trait Functor[T] {
     def map[R](f: T => R) = fmap(f)(this)
 
     def toADT: ADT
   }
 
+  // algebra and coalgebra defined as usual
+  type Algebra  [T] = PartialFunction[Functor[T], T]
+  type Coalgebra[T] = PartialFunction[T, Functor[T]]
+
+  // instance Functor f where fmap = ...
+  // extension point: adding new data types
+  def fmap[T, R](f: T => R): Functor[T] => Functor[R] = {
+    case x => sys error s"No clue how to map over $x"
+  }
+
+  // one-shot fixed point of a derived functor to support paramorphisms
   case class ParaADT(functor: Functor[(ADT, ParaADT)]) {
     def fold[T](f: (=> ADT, => Functor[T]) => T): T =
       f(functor.map(_._1).toADT, functor map { _._2 fold f})
@@ -34,11 +43,7 @@ trait NameBindingLanguage {
     }
   }
 
-  object ADT {
-    // anamorphism
-    def ana[T](psi: Coalgebra[T])(x: T): ADT = (psi(x) map (ana(psi))).toADT
-  }
-
+  // fixed point of Functor[T]
   trait ADT extends Functor[ADT] {
     // catamorphism
     def fold[T](f: Algebra[T]): T = f(this map (_ fold f))
@@ -46,11 +51,16 @@ trait NameBindingLanguage {
     // paramorphism.
     // if a normal function (not a case function) is given as argument,
     // then para does not recurse unless necessary.
-    // this is important if the ADT has a cycle.
+    // this is important in avoiding nontermination in the event that
+    // the ADT has a cycle.
     def para[T](f: (=> ADT, => Functor[T]) => T): T = ParaADT(this) fold f
 
     def subst(from: Binder, to: ADT): ADT = subst(Map(from -> to))
 
+    // substitution employs a paramorphism to divert recursion path
+    // when the name to be substituted is rebound.
+    // paramorphisms are not necessarily compositional.
+    // substitution is not.
     def subst(env: Map[Binder, ADT]): ADT = para[ADT] { (before, after) =>
       before match {
         case binder: Binder if env isDefinedAt binder =>
@@ -77,41 +87,39 @@ trait NameBindingLanguage {
     }
   }
 
-  // What... a name-binding language?!
+  object ADT {
+    // anamorphism
+    def ana[T](psi: Coalgebra[T])(x: T): ADT = (psi(x) map (ana(psi))).toADT
+  }
+
+  // NAME BINDING LANGUAGE
+
+  // Binders are names and names are binders.
+  //
+  // The source of the difficulty of substitution lies in the gap
+  // between the lambda term's meaning as a graph and its
+  // representation as a tree. We eliminate the difficulty at the
+  // root via a graph representation of lambda terms. Objects are
+  // nodes. References are edges.
+  //
+  // This arrangement makes node identity equal to reference
+  // identity. Binders are generative: two binders are equal if
+  // and only if they occupy the same space on the heap.
 
   type Env[T] = PartialFunction[Binder, T]
 
-  // Note the lack of type recursion here
+  // a bound name has a back edge to its binder
   trait Bound[T] extends Functor[T] {
     def binder: Binder
     override def toString: String = binder.name
   }
 
-  trait BinderFactory[T <: Binder] {
-    def newBinder(): T
-    def bound(binder: Binder): ADT with Bound[ADT]
-
-    def apply(body: ADT => ADT): T = {
-      val binder = newBinder
-      binder.body = body(bound(binder))
-      binder
-    }
-
-    def apply(defaultName: String)(body: ADT => ADT): T = {
-      val binder = newBinder
-      binder.defaultName = defaultName
-      binder.body = body(bound(binder))
-      binder
-    }
-
-    def unapply(b: T): Option[(Binder, ADT)] = Some((b.binder, b.body))
-
-    def replaceBody(binder: Binder, body: ADT): Binder =
-      apply(binder.defaultName) { x => body.subst(binder, x) }
-  }
-
+  // a binder is a name is a binder
   trait Binder extends ADT {
-    // inherited from case class
+    // inherited from case class of the functor.
+    // they should be mutated nowhere outside trait NameBindingLanguage
+    // but we can't make them private because the case classes has to
+    // "okay" their mutability.
     var binder: Binder
     var body: ADT
 
@@ -120,6 +128,8 @@ trait NameBindingLanguage {
 
     lazy val name: String = christianMe(body)
 
+    // convert a binder to HOAS.
+    // one can also convert an HOAS to a binder: see BinderFactory.apply
     def apply(arg: ADT): ADT = (toFun[ADT] { case x => x.toADT })(arg)
 
     def toFun[T](algebra: Algebra[T]): T => T = x => body.fold[T] {
@@ -134,7 +144,8 @@ trait NameBindingLanguage {
       // - Do you renounce Satan?
       if (body == null)
         // - I do renounce him.
-        sys error s"${getClass.getSimpleName}($defaultName, $body)"
+        sys error (s"name of incomplete binder:" +
+            s"${getClass.getSimpleName}($defaultName, $body)")
       // - And all his works?
       val usedNames: Set[String] =
         body.traverse.flatMap({
@@ -158,7 +169,10 @@ trait NameBindingLanguage {
       // - In nomine Patri, et Filii, et Spiritus Sancti,
       //   Michael Rizzi, go in peace.
       myName
+      // (this is an excerpt from Godfather :) )
     }
+
+    // binders are generative. no two binders are alike.
 
     override val hashCode: Int = Binder.nextHashCode
 
@@ -181,9 +195,36 @@ trait NameBindingLanguage {
     }
   }
 
+  trait BinderFactory[T <: Binder] {
+    def newBinder(): T
+    def bound(binder: Binder): ADT with Bound[ADT]
+
+    // constructs a binder from an HOAS, passing itself as the argument
+
+    def apply(body: ADT => ADT): T = {
+      val binder = newBinder
+      binder.body = body(bound(binder))
+      binder
+    }
+
+    def apply(defaultName: String)(body: ADT => ADT): T = {
+      val binder = newBinder
+      binder.defaultName = defaultName
+      binder.body = body(bound(binder))
+      binder
+    }
+
+    def unapply(b: T): Option[(Binder, ADT)] = Some((b.binder, b.body))
+
+    def replaceBody(binder: Binder, body: ADT): Binder =
+      apply(binder.defaultName) { x => body.subst(binder, x) }
+  }
+
   def prettyMorphism(t: => ADT, s: => Functor[String]): String = t.toString
 }
 
+// The horrible boilerplates necessary for the comfort of banana users,
+// that are better generated with a macro.
 trait Syntax extends NameBindingLanguage {
   override
   def fmap[T, R](f: T => R): Functor[T] => Functor[R] = {
@@ -194,15 +235,23 @@ trait Syntax extends NameBindingLanguage {
     case otherwise    => super.fmap(f)(otherwise)
   }
 
+  // Each constructor of the functor becomes
+  //   1 x case class implementing the functor
+  //   1 x normal class to mix in the fixed point trait
+  //   1 x companion object to pattern-match on the fixed point
+
   case class AbsF[T](var binder: Binder, var body: T) extends Functor[T] {
     def toADT: ADT = body match {
       case body: ADT => Abs.replaceBody(binder, body)
     }
   }
+  // Thankfully, we need only mix in the Binder trait at the fixed point
+  // to take advantage of it.
   class Abs(body: ADT) extends AbsF[ADT](null, body) with Binder
   object Abs extends BinderFactory[Abs] {
     def newBinder(): Abs = new Abs(null)
     def bound(binder: Binder): Var = Var(binder)
+    // constructor/extractor of Abs inherited from BinderFactory
   }
 
   case class VarF[T](binder: Binder) extends Bound[T]
@@ -227,6 +276,8 @@ trait Syntax extends NameBindingLanguage {
     def unapply(a: App): Option[(ADT, ADT)] = Some((a.fun, a.arg))
   }
 
+  // constants, primitive operators, or free variables
+  // depending on the viewpoint
   case class ConF[T](stant: String) extends Functor[T]
   { def toADT: ADT = Con(stant) }
   class Con(stant: String) extends ConF[ADT](stant) with ADT {
@@ -250,7 +301,7 @@ trait Syntax extends NameBindingLanguage {
   implicit def stringToGlobalConstant(s: String): ADT = Con(s)
 }
 
-// copied from cata.scala
+// trait of value domain, skippable
 trait Values {
   trait Val {
     def apply(arg: Val): Val
@@ -304,10 +355,8 @@ trait Values {
 }
 
 trait ValueSemantics extends Syntax with Values {
-  def eval(t: ADT): Val = {
-    def withEnv(t: ADT) = t fold evalAlgebra
-    withEnv(t)(Map.empty[Binder, Val])
-  }
+  def eval(t: ADT): Val =
+    (t fold evalAlgebra)(Map.empty[Binder, Val])
 
   /** extension point: evaluation operation */
   def evalAlgebra: Algebra[Env[Val] => Val] = {
@@ -323,12 +372,7 @@ trait ValueSemantics extends Syntax with Values {
 trait ReductionSemantics extends Syntax {
   type Reduction = Algebra[ADT]
 
-  override def fmap[T, R](f: T => R): Functor[T] => Functor[R] = {
-    case TT() => TT()
-    case otherwise => super.fmap(f)(otherwise)
-  }
-  case class TT[T]() extends Functor[T] { def toADT = TT }
-  object TT extends TT[ADT]() with ADT
+  val TT = Con("TT") // unit value
 
   val beta: Reduction = {
     case AppF(f: Abs, arg) => f(arg)
@@ -352,6 +396,8 @@ trait ReductionSemantics extends Syntax {
 
   def eval(t: ADT): ADT = leftMostOuterMost(t).fold(t)(eval)
 
+  // returns None     if t is irreducible
+  //         Some(t') if t reduces to t'
   def leftMostOuterMost(t: ADT): Option[ADT] = {
     ((beta orElse mu orElse delta) andThen Some.apply).
       applyOrElse[ADT, Option[ADT]](
@@ -441,14 +487,7 @@ trait Test extends TestSubjects {
 
 object TestSemantics {
   def main(args: Array[String]){
-    val v = new Test with ValueSemantics    { type Domain = Val }
-    val r = new Test with ReductionSemantics{ type Domain = ADT }
-    v.testAcyclic
-    v.testRecurse
-    v.testSelfApp
-
-    r.testAcyclic
-    r.testRecurse
-    r.testSelfApp
+    (new Test with ValueSemantics     { type Domain = Val }).testAll
+    (new Test with ReductionSemantics { type Domain = ADT }).testAll
   }
 }
