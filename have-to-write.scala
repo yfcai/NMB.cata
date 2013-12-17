@@ -68,7 +68,7 @@ trait HaveToWrite {
       s"${getClass.getSimpleName}($name, $body)"
   }
   object Abs {
-    def apply(name: String, body: Term): Abs = Abs(name, body)
+    def apply(name: String, body: Term): Abs = new Abs(name, body)
     def unapply(v: Abs): Option[(String, Term)] = Some((v.name, v.body))
   }
 
