@@ -28,7 +28,7 @@ trait NotANumber {
     bodyGenus     : Genus,
     extraSubgenera: Genus*
   ) extends
-      Tag(myGenus, String +: bodyGenus +: extraSubgenera: _*)
+      Tag(myGenus, §.genus +: bodyGenus +: extraSubgenera: _*)
   {
     def        bodyOf(t: Tree): Tree   = t.children.tail.head
     def defaultNameOf(t: Tree): String = t.children.head match {
@@ -213,16 +213,22 @@ trait NotANumber {
       Some((y.tag, y.children))
   }
 
-  // string literals
-  case object String extends Genus
-  case object StringTag extends Tag(String)
-  object § {
-    def apply(s: String): ∙[String] = ∙(StringTag, s)
-    def unapply(s: ∙[_]): Option[String] = s match {
-      case ∙(StringTag, s: String) => Some(s)
+  // literals
+  case class LiteralGenus[T](man: Manifest[T]) extends Genus
+  case class LiteralTag[T](man: Manifest[T]) extends Tag(LiteralGenus(man))
+
+  abstract class LiteralFactory[T: Manifest] {
+    val genus: LiteralGenus[T] = LiteralGenus(manifest[T])
+    val tag: LiteralTag[T] = LiteralTag(manifest[T])
+    def apply(x: T): ∙[T] = ∙(tag, x)
+    def unapply(x: ∙[_]): Option[T] = x match {
+      case ∙(tag, y: T) if tag == this.tag => Some(y)
       case _ => None
     }
   }
+
+  // string literals
+  object § extends LiteralFactory[String]
 
   // terms, no boilerplate
   case object Term extends Genus
