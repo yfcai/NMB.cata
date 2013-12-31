@@ -2,6 +2,8 @@
   * I am not a number---I am a free variable
   */
 
+import scala.language.implicitConversions
+
 trait NotANumber {
   trait Genus // type, terms, etc
 
@@ -217,15 +219,17 @@ trait NotANumber {
   case class LiteralGenus[T](man: Manifest[T]) extends Genus
   case class LiteralTag[T](man: Manifest[T]) extends Tag(LiteralGenus(man))
 
-  abstract class LiteralFactory[T: Manifest] {
-    val genus: LiteralGenus[T] = LiteralGenus(manifest[T])
-    val tag: LiteralTag[T] = LiteralTag(manifest[T])
+  abstract class LeafFactory[T](val tag: Tag) {
+    def genus: Genus = tag.genus
     def apply(x: T): ∙[T] = ∙(tag, x)
     def unapply(x: ∙[_]): Option[T] = x match {
-      case ∙(tag, y: T) if tag == this.tag => Some(y)
+      case ∙(tag, y) if tag == this.tag => Some(y.asInstanceOf[T])
       case _ => None
     }
   }
+
+  abstract class LiteralFactory[T: Manifest]
+      extends LeafFactory[T](LiteralTag(manifest[T]))
 
   // string literals
   object § extends LiteralFactory[String]
@@ -237,24 +241,85 @@ trait NotANumber {
   case object Abs extends Binder(Var, Term, Term)
   case object App extends Tag(Term, Term, Term)
 
+  // extrapolate BinderFactory after more examples
   object λ {
     def apply(x: String)(body: Tree): Tree =
       ⊹(Abs, §(x), body.imprison(Var, x, 0))
   }
 
-  object χ {
-    def apply(x: String): Tree =
-      ∙(FreeVar, x)
-  }
+  // æ
+  object χ extends LeafFactory[String](FreeVar)
 }
 
-object TestNotANumber extends NotANumber {
-  val id = λ("x")(χ("x"))
-  val const = λ("x")(λ("y")(χ("x")))
+trait NotANumberSemantics extends NotANumber {
+  type Reduction = PartialFunction[TreeF[Tree], Tree]
+
+  val beta: Reduction = {
+    case ⊹(App, f @ ⊹(Abs, _*), x) => f(x)
+  }
+
+  val mu: Reduction = {
+    case ⊹(App, χ("fix"), f) => ⊹(App, f, ⊹(App, χ("fix"), f))
+  }
+
+  val delta: Reduction =
+    liftInt("+", _+_) orElse liftInt("-", _-_) orElse
+    liftInt("*", _*_) orElse liftInt("/", _/_) orElse {
+      case ⊹(App, χ("if0"), χ(n)) =>
+        if (n.toInt == 0)
+          λ("x")(λ("y")(χ("x")))
+        else
+          λ("x")(λ("y")(χ("y")))
+    }
+
+  def liftInt(symbol: String, op: (Int, Int) => Int):
+      Reduction = liftOp2[Int](symbol, op, _.toInt, _.toString)
+
+  def liftOp2[T](symbol: String, op: (T, T) => T,
+                 cast: String => T, castBack: T => String):
+      Reduction = {
+    case ⊹(App, ⊹(App, χ(sym), χ(lhs)), χ(rhs)) if sym == symbol =>
+      χ(castBack(op(cast(lhs), cast(rhs))))
+  }
+
+  // is strict in as many arguments as necessary.
+  // for best behavior, put all strict arguments before nonstrict ones.
+  def leftmostOutermost(t: Tree): Option[Tree] =
+    ((beta orElse mu orElse delta) andThen Some.apply).
+      applyOrElse[Tree, Option[Tree]](t, {
+        case ⊹(App, fun, arg) =>
+          leftmostOutermost(fun).fold(
+            leftmostOutermost(arg) map { x => ⊹(App, fun, x) }
+          ) { f => Some(⊹(App, f, arg)) }
+        case _ =>
+          None
+      })
+
+  def eval(t: Tree): Tree = leftmostOutermost(t).fold(t)(eval)
+}
+
+object TestNotANumber extends NotANumberSemantics {
+  implicit def quickVariable(x: String): Tree = χ(x)
+  implicit class quickApp[S <% Tree](s: S) { def ₋ (t: Tree) = ⊹(App, s, t) }
+
+  val id = λ("x")("x")
+  val const = λ("x")(λ("y")("x"))
+  val four = "+" ₋ "2" ₋ "2"
+
+  val fifty5 = "fix" ₋ λ("f")(λ("n")(
+    "if0" ₋ "n" ₋ "0" ₋ ("+" ₋ "n" ₋ ("f" ₋ ("-" ₋ "n" ₋ "1")))
+  )) ₋ "10"
+
+  val hundred20 = "fix" ₋ λ("f")(λ("n")(
+    "if0" ₋ "n" ₋ "1" ₋ ("*" ₋ "n" ₋ ("f" ₋ ("-" ₋ "n" ₋ "1")))
+  )) ₋ "5"
+
+  def test(t: Tree) =
+    println(s"${eval(t).print}\n${t.print}\n")
 
   def main(args: Array[String]) {
-    println(id.print)
-    println(const.print)
-    println(const(id).print)
+    test(four)
+    test(fifty5)
+    test(hundred20)
   }
 }
