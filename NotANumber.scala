@@ -37,6 +37,8 @@ trait NotANumber {
       case §(x) => x
     }
 
+    def bindingGenus: Genus = prison.genus
+
     // name discovery in a namespace
     def nameOf(t: Tree): String = {
       val toAvoid = t.freeNames ++
@@ -96,11 +98,10 @@ trait NotANumber {
 
     // substitution of variable bound here
     // (only works on binders)
-    def apply(xdef: Tree): Tree = {
-      require(tag.isInstanceOf[Binder])
-      tag match { case tag: Binder =>
+    def apply(xdef: Tree): Tree = tag match {
+      case tag: Binder =>
+        require(tag.bindingGenus == xdef.tag.genus)
         tag bodyOf this subst (0, xdef)
-      }
     }
 
     // substitution of bound variable
@@ -130,7 +131,7 @@ trait NotANumber {
           ∙(tag, get)
       }
 
-    // d-place shift of t above cutoff c
+    // d-place shift of this above cutoff c
     def shift(d: Int, c: Int): Tree = this match {
       case ⊹(tag: Binder, children @ _*) =>
         ⊹(tag, children map (_.shift(d, c + 1)): _*)
