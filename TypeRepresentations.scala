@@ -20,6 +20,19 @@ trait TypeRepresentations {
     }
   }
 
+  // a representation of nonempty lists
+  type ListF2[A, L] = Either[A, (A, L)]
+
+  def repListF2[A, L](ra: Rep[A], rl: Rep[L]): Rep[ListF2[A, L]] = RPlus(ra, RProd(ra, rl))
+
+  class RepList2[A](ra: Rep[A]) extends Unroll[List[A], ListF2[A, List[A]]] {
+    def unroll = {
+      case x :: Nil => (Left(x), repListF2(ra, this))
+      case x :: xs => (Right((x, xs)), repListF2(ra, this))
+      case Nil => sys error "require nonempty list"
+    }
+  }
+
   // strange thing:
   // if pattern matching on `rep` isn't complete,
   // then stack overflow instead of match error... why?
@@ -29,6 +42,17 @@ trait TypeRepresentations {
     case RProd(ra, rb) => sumAllInts(x._1)(ra) + sumAllInts(x._2)(rb)
     case RPlus(ra, rb) => x.fold(a => sumAllInts(a)(ra), b => sumAllInts(b)(rb))
     case r: Unroll[_, _] => r unroll x match { case (b, rb) => sumAllInts(b)(rb) }
+  }
+
+  // `sumAllInts` missing the RUnit case
+  // it seems missing a case is okay unless the missing case shows
+  // up in the final type representation. there mayn't be a way
+  // to enforce this at compile type.
+  def sumNonempty[T](x: T)(rep: Rep[T]): Int = rep match {
+    case RInt => x
+    case RProd(ra, rb) => sumNonempty(x._1)(ra) + sumNonempty(x._2)(rb)
+    case RPlus(ra, rb) => x.fold(a => sumNonempty(a)(ra), b => sumNonempty(b)(rb))
+    case r: Unroll[_, _] => r unroll x match { case (b, rb) => sumNonempty(b)(rb) }
   }
 
   // remaining questions
@@ -49,7 +73,9 @@ object TestTypeRepresentations extends TypeRepresentations {
     val xs = (1 to 100).toList
 
     val sumXs: Int = sumAllInts(xs)(new RepList(RInt))
-
     println(s"sum(1..100) = $sumXs")
+
+    val sumXs2: Int = sumNonempty(xs)(new RepList2(RInt))
+    println(s"sumNonempty(1..100) = $sumXs2")
   }
 }
