@@ -58,7 +58,8 @@ trait TypeRepresentations {
   // remaining questions
   //
   // 1. is there any way to have ADT carry their own type rep,
-  //    such that traversals need only take 1 type parameter?
+  //    such that traversals don't have to take type rep as an
+  //    extra param?
   //
   // 2. every n-hole contexts of an ADT defines a functor.
   //    every functor defines a map (commuting) function
