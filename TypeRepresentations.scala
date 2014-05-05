@@ -52,4 +52,6 @@ object TestTypeRepresentations extends TypeRepresentations { def main(args: Arra
     // sumAllInts(xs)(rView) // could not find implicit value r: () => Rep[A]
     // sumAllInts(xs)(rView(isoListF2, () => rPlus)) // diverging implicit expansion
     ???
+
+  // type rep may be useful in haskell. in scala, runtime instanceOf tests work better.
 }}
