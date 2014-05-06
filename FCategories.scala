@@ -11,7 +11,7 @@ trait FCategories {
 
     // the unique morphism β to make the following diagram commute:
     //
-    // F[Fix[F]] --[unroll]--> Fix[F]
+    // F[Fix[F]]  --[Roll]-->  Fix[F]
     //
     //     |                     |
     //     | fmap(β)           β |
