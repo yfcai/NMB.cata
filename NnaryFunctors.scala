@@ -2,11 +2,45 @@ import language.higherKinds
 import language.implicitConversions
 import annotation.unchecked.uncheckedVariance
 
-trait NnaryFunctors {
+trait Bifunctors {
+  trait Bifunctor[F[_, _]] {
+    def bimap[A, B, C, D]: (A => B) => (C => D) => F[A, C] => F[B, D]
+  }
+
+  case class :*:[+A, +B](_1: A, _2: B)
+  sealed trait :+:[+A, +B]
+  case class L[A](get: A) extends (A :+: Nothing)
+  case class R[B](get: B) extends (Nothing :+: B)
+
+  implicit class makeProduct[B](y: B) {
+    def :*:[A](x: A): A :*: B = new :*:(x, y)
+  }
+
+  implicit object :*: extends Bifunctor[:*:] {
+    def bimap[A, B, C, D] = f => g => { case x :*: y => f(x) :*: g(y) }
+  }
+
+  implicit object :+: extends Bifunctor[:+:] {
+    def bimap[A, B, C, D] = f => g => { case L(x) => L(f(x)) ; case R(y) => R(g(y)) }
+  }
+}
+
+trait NnaryFunctors extends Bifunctors {
   trait Functor[F[_]] {
     def fmap[A, B](f: A => B): F[A] => F[B]
 
-    // appeal to the universal property of the initial algebra
+    // appeal to the universal property of the initial algebra & compute
+    // the unique morphism β to make the following diagram commute:
+    //
+    //  F[FixF]  ----[id]--->   FixF
+    //
+    //     |                     |
+    //     | fmap(β)           β |
+    //     V                     V
+    //
+    //    F[B]   -----[f]---->   B
+    //
+
     def init[FixF <: F[FixF], T](f: F[T] => T)(x: FixF): T = f(fmap[FixF, T](init(f))(x))
   }
 
@@ -42,7 +76,7 @@ trait NnaryFunctors {
   type ListF2[A, F[_], C] = { type λ[B] = ListF[A, F[B], C] }
   type ListF3[A, B, F[_]] = { type λ[C] = ListF[A, B, F[C]] }
 
-  def listFunctor1[F[_]: Functor, B, C]: Functor[ListF1[F, B, C]#λ] = new Functor[ListF1[F, B, C]#λ] {
+  def listF1[F[_]: Functor, B, C]: Functor[ListF1[F, B, C]#λ] = new Functor[ListF1[F, B, C]#λ] {
     def fmap[X, Y](f: X => Y): ListF[F[X], B, C] => ListF[F[Y], B, C] = _ match {
       case Nil(get) => new Nil(implicitly[Functor[F]].fmap(f)(get))
       case Cons(head, tail) => new Cons(head, tail)
