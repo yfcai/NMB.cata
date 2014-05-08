@@ -51,20 +51,15 @@ trait NnaryFunctors extends Bifunctors {
   }
 
   sealed trait ListF[+A, +B, +C]
-  case class Nil[+A, +B, +C](get: A) extends ListF[A, B, C]
-  case class Cons[+A, +B, +C](head: B, tail: C) extends ListF[A, B, C]
+  case class Nil[+A](get: A) extends ListF[A, Nothing, Nothing]
+  case class Cons[+B, +C](head: B, tail: C) extends ListF[Nothing, B, C]
 
   sealed trait List[+A] extends ListF[Unit, A, List[A]] {
     // can't create a trait for fixed points, because context bound Functor[F]
     // demands constructor argument and we can't have that.
     def fold[T](f: ListF[Unit, A, T] => T): T = listF3[Unit, A, ID].init(f)(this)
 
-    def map[B](f: A => B): List[B] =
-      listF3[Unit, A, ID].init[List[A], List[B]](
-        // you should really explore bifunctors a bit.
-        // maybe they're all that's needed to make functors aware of all argument positions.
-        ys => listF2[Unit, ID, List[B]].fmap(f)(ys)
-      )(this)
+    def map[B](f: A => B): List[B] = fold[List[B]](ys => listF2[Unit, ID, List[B]].fmap(f)(ys))
   }
 
   implicit def fixListF[A, L <% List[A]](xs: ListF[Unit, A, L]): List[A] = xs match {
@@ -108,6 +103,9 @@ object TestNnaryFunctors extends NnaryFunctors {
       case Cons(m, n) => m * n
     }
 
+    val xs7 = xs map (_ * 7)
+
     println(s"Π $xs = $Pi_xs")
+    println(s"7 .* xs = $xs7")
   }
 }
