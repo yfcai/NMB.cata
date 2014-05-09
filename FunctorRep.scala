@@ -66,18 +66,19 @@ trait FunctorRep {
   }
 }
 
-trait ListFunctorRep extends FunctorRep {
-  type ListF[+A, +L] = Unit :+: (A :*: L)
-  sealed trait List[+A] extends ListF[A, List[A]] {
-    def fold[T](f: ListF[A, T] => T): T = {
+trait GenericListFunctorRep extends FunctorRep {
+  type GListF[+U, +A, +L] = U :+: (A :*: L)
+  type GListP[+A, +L] = GListF[Unit, A, L]
+  sealed trait GList[+A] extends GListP[A, GList[A]] {
+    def fold[T](f: GListP[A, T] => T): T = {
       val kki = functorKKI[Unit, A]
-      def loop(x: List[A]): T = f(kki.fmap(loop)(x))
+      def loop(x: GList[A]): T = f(kki.fmap(loop)(x))
       loop(this)
     }
 
-    def map[B](f: A => B): List[B] = {
-      val kik = functorKIK[Unit, List[B]]
-      fold[List[B]](a_bs => kik.fmap(f)(a_bs))
+    def map[B](f: A => B): GList[B] = {
+      val kik = functorKIK[Unit, GList[B]]
+      fold[GList[B]](a_bs => kik.fmap(f)(a_bs))
     }
 
     def toStandardList = fold[collection.immutable.List[A]] {
@@ -85,7 +86,7 @@ trait ListFunctorRep extends FunctorRep {
       case R(x :*: xs) => x :: xs
     }
 
-    override def toString = toStandardList.toString
+    override def toString = s"GList(s${toStandardList.mkString(", ")})"
 
     private[this] def functorKKI[T1, T2] =
       // scala 2.11 does not relieve the excessive type annotation.
@@ -102,16 +103,34 @@ trait ListFunctorRep extends FunctorRep {
       ](K[T1], |*|[Identity, Const[T3]#λ](I, K[T3]))
   }
 
-  object List {
+  object GNil extends L(()) with GList[Nothing] {
+    // in lieu of unapply(), to act like a case object without being one
+    override def equals(that: Any): Boolean = that match {
+      case L(()) => true
+      case _ => false
+    }
+  }
+
+  object GCons {
+    def apply[A](x: A, xs: GList[A]): GList[A] = R(x :*: xs)
+    def unapply[A, B, C](xs: GListF[A, B, C]): Option[(B, C)] = xs match {
+      case R(x :*: xs) => Some((x, xs))
+      case _ => None
+    }
+  }
+
+  object GList {
     import language.implicitConversions
 
-    implicit def fixListF[A](xs: ListF[A, List[A]]): List[A] = xs match {
-      case L(()) => new L(()) with List[A]
-      case R(xs) => new R(xs) with List[A]
+    // implicit conversion has to be there.
+    // mixed-in fixed point unrolls automatically.
+    // rolling can't be transparent, though.
+    implicit def fixGListP[A](xs: GListP[A, GList[A]]): GList[A] = xs match {
+      case L(()) => new L(()) with GList[A]
+      case R(xs) => new R(xs) with GList[A]
     }
 
-    def apply[A](args: A*): List[A] =
-      args.foldRight[List[A]](L(()))((x, xs) => R(x :*: xs))
+    def apply[A](args: A*): GList[A] = args.foldRight[GList[A]](GNil)(GCons[A])
   }
 }
 
@@ -195,15 +214,15 @@ trait NominalListFunctorRep extends FunctorRep {
   }
 }
 
-object TestFunctorRep extends ListFunctorRep with NominalListFunctorRep {
-  val xs = List(1, 2, 3, 4, 5)
+object TestFunctorRep extends GenericListFunctorRep with NominalListFunctorRep {
+  val xs = GList(1, 2, 3, 4, 5)
 
   val ys = NList(1, 2, 3, 4, 5)
 
   def main(args: Array[String]) {
     val fac5 = xs.fold[Int] {
-      case L(()) => 1
-      case R(m :*: n) => m * n
+      case GNil => 1
+      case GCons(m, n) => m * n
     }
     println(s"Π $xs = $fac5")
     println(s"7 .* xs = ${xs map (_ * 7)}")
@@ -216,5 +235,11 @@ object TestFunctorRep extends ListFunctorRep with NominalListFunctorRep {
     })
     println(s"Π ${ys.pretty} = $nfac5")
     println(s"7 .* ys = ${ys.map(_ * 7).pretty}")
+
+    println()
+
+    GList() match {
+      case GNil => println("GList() matches GNil.")
+    }
   }
 }
