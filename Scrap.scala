@@ -1,69 +1,85 @@
 import reflect.{ClassTag, classTag}
+import language.higherKinds
 
 // scrap your boilerplate
 
 trait Scrap {
-  // Newtype: here to get around not being able to extend final classes.
-  trait Newtype[+T] {
-    def get: T
-    override def toString = get.toString
-  }
-  import language.implicitConversions
-  implicit def autoUnboxNewtype[T](x: Newtype[T]): T = x.get
-  implicit def autoBoxNewtype[T](x: T): Newtype[T] = new Newtype[T] { def get = x }
-
-  // If x : T, then Hole(x) : T. This way a hole can be around everything.
-
-  trait Hole[+T] {
-    def getContentOfHole: T
-    override def toString = s"Hole($getContentOfHole)"
+  trait Gather[W[_]] {
+    def apply[A: ClassTag, B: ClassTag](operator: W[A => B], operand: A): W[B]
   }
 
-  object Hole {
-    def unapply[T](x: T): Option[T] =
-      x match {
-        // has to use # and disregard path dependence
-        // cannot require T: ClassTag. It would complain that
-        // Scrap$$anon$2 cannot be cast to Scrap.
-        case hole: Scrap#Hole[T] => Some(hole.getContentOfHole)
+  trait Lift[W[_]] {
+    def apply[A: ClassTag](a: A): W[A]
+  }
 
-        case _ => None
-      }
+  trait Data[Self] {
+    def gfoldl[W[_]](gather: Gather[W], lift: Lift[W]): W[Self]
 
-    // PRECONDITION: T is a trait
-    // otherwise we'd run into all sorts of horrid mess
-    def apply[T <: AnyRef : ClassTag](x: T): T = {
-      // want to write: new Hole(x) with T
-      // has to write:
-      import net.sf.cglib.proxy._
-      import java.lang.reflect.{Method, Constructor}
-      val enhancer = new Enhancer
-      val classT = classTag[T].runtimeClass
-      val classHole = classTag[Hole[T]].runtimeClass
-      enhancer setInterfaces Array(classT, classHole)
-      enhancer setCallback new InvocationHandler {
-        def invoke(proxy: Object, method: Method, args: Array[Object]): Object =
-          method.getDeclaringClass match {
-            // problem: messes up equal & hashcode.
-            // we'd always have Hole(x) == x.
-            case c if c == classHole => x
-            case _ => method.invoke(x, args: _*)
-          }
+    private[this] type ID[T] = T
+
+    def gmapT(fs: MkT[_]*): Self = gfoldl[ID](
+      new Gather[ID] {
+        def apply[A: ClassTag, B: ClassTag](operator: A => B, operand: A): B =
+          operator(MkT.call(fs, operand))
       }
-      // Here's why T's gotta be an interface.
-      // If it weren't, it cannot be created.
-      enhancer.create.asInstanceOf[T]
+      ,
+      new Lift[ID] {
+        def apply[A: ClassTag](a: A): A = a
+      }
+    )
+
+    /* problematic
+    def everywhere(fs: MkT[_]*): Self = MkT.call(fs, gmapT(MkT[Data[_]]({
+      case x => x.everywhere(fs: _*).asInstanceOf[Data[_]]
+    })))
+     */
+  }
+
+  case class MkT[T: ClassTag](f: PartialFunction[T, T]){
+    def apply[A: ClassTag](x: A): Option[A] =
+      if (classTag[A] == classTag[T]) { // the only thing that works
+        val y = x.asInstanceOf[T]
+        if (f isDefinedAt y)
+          Some(f(y).asInstanceOf[A])
+        else
+          None
+      }
+      else
+        None
+  }
+
+  object MkT {
+    def call[A: ClassTag](fs: Seq[MkT[_]], x: A): A = {
+      var maybe: Option[A] = None
+      val fi = fs.iterator
+      while (maybe == None && fi.hasNext) maybe = fi.next()(x)
+      maybe match {
+        case None => x
+        case Some(y) => y
+      }
+    }
+  }
+
+  implicit class listDerivingData[T: ClassTag](xs: List[T]) extends Data[List[T]] {
+    def gfoldl[W[_]](k: Gather[W], z: Lift[W]): W[List[T]] = xs match {
+      case Nil =>
+        z(Nil)
+
+      case x :: xs =>
+        // k (k (z (:)) x) xs
+        k(k(z((x: T) => (xs: List[T]) => x :: xs), x), xs)
     }
   }
 }
 
 object TestScrap extends Scrap {
 
-  case class X(i: Newtype[Int])
-
   def main(args: Array[String]) {
-    X(Hole(5)) match {
-      case z @ X(Hole(n)) => println(z)
-    }
+    val xs = Range(1, 10).toList
+    val ys = xs.gmapT(MkT[Int] {
+      case 1 => 100
+      case 3 => 30
+    })
+    println(s"(1..9).gmapT(f) = $ys")
   }
 }
