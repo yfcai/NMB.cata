@@ -1,12 +1,18 @@
 /** Formalizing category theory in scala does not seem practical.
-  * Nevertheless, you gained insight about natural transformations:
   *
   * A natural transformation is mapping against one argument of
   * a curried multivariate functor.
+  *
+  * Categorical structures are hard to make explicit.
+  * Consider def macro as a compiler, who traverses
+  * the syntax tree and makes the necessary adjustments.
+  *
+  * Question: What would be the benefit of this approach?
   */
 
 import language.higherKinds
 
+// categories via type members/path-dependent type
 trait Categories {
   categories =>
 
@@ -207,5 +213,144 @@ trait Categories {
         }
       }
     }
+  }
+}
+
+// categories by brute force
+// Cat_i, Functor_m_n are like Tuple1--Tuple22
+trait BruteForceCategories {
+
+  // Numbering scheme
+  //
+  //      0
+  //      |
+  //      1
+  //     / \
+  //    2   3
+  //   /|   |\
+  //  4 5   6 7
+
+  trait Cat0 {
+    // objects are types
+    // morphisms are functions
+    def id[X]: X => X = identity // mapping objects to morphisms
+  }
+
+  trait Functor_0_0 {
+    type MAP[X]
+    def fmap[A, B](f: A => B): MAP[A] => MAP[B]
+  }
+
+  trait Nat_0_0 {
+    val from: Functor_0_0
+    val to: Functor_0_0
+    // def apply[X]: from.MAP[X] => to.MAP[X] // mapping object to morphism
+    def apply[X](z: from.MAP[X]): to.MAP[X]
+  }
+
+  trait Cat1 {
+    // objects are Functor_0_0
+    // morphisms are natural transformations
+    def id(f: Functor_0_0): Nat_0_0 = new Nat_0_0 {
+      val from: f.type = f
+      val to: f.type = f
+      def apply[X](x: f.MAP[X]): f.MAP[X] = x
+    }
+  }
+
+  trait Functor_0_1 {
+    def map[X]: Functor_0_0
+    def fmap(f: Functor_0_0): Nat_0_0
+  }
+
+  trait Functor_1_1 {
+    def map(f: Functor_0_0): Functor_0_0
+    def fmap(eta: Nat_0_0): Nat_0_0
+  }
+
+  sealed trait ListF[+A, +L]
+  case object Nil extends ListF[Nothing, Nothing] with List[Nothing]
+  case class Cons[+A, +L](head: A, tail: L) extends ListF[A, L]
+
+  // identity functor on Cat0
+  object Id0 extends Functor_0_0 {
+    type MAP[A] = A
+    def fmap[A, B](f: A => B): A => B = f
+  }
+
+  // const functor on Cat0
+  case class Const0[T]() extends Functor_0_0 {
+    type MAP[A] = T
+    def fmap[A, B](f: A => B): T => T = identity
+  }
+
+  // (A => F[A]) => (A => ListF[A, F[A]]
+  // its fixed point is (A => List[A])
+  // this is the classic "put env in argument" strategy
+  object ListF extends Functor_1_1 {
+
+    def map(_f: Functor_0_0): Functor_0_0 = new NestedFunctor { val f = _f }
+
+    def fmap(eta: Nat_0_0): Nat_0_0 = new Nat_0_0 {
+      val from = new NestedFunctor {
+        val f: eta.from.type = eta.from
+      }
+
+      val to = new NestedFunctor {
+        val f: eta.to.type = eta.to
+      }
+
+      def apply[A](xs: ListF[A, eta.from.MAP[A]]): ListF[A, eta.to.MAP[A]] = xs match {
+        case Nil => Nil
+        case Cons(x, xs) => Cons(x, eta(xs)) // mapping over 2nd arg
+      }
+    }
+
+    trait NestedFunctor extends Functor_0_0 {
+      val f: Functor_0_0
+      type MAP[A] = ListF[A, f.MAP[A]]
+      def fmap[A, B](h: A => B): MAP[A] => MAP[B] = {
+        case Nil => Nil
+        case Cons(x, xs) => Cons(h(x), f.fmap(h)(xs)) // mapping over 1st arg
+      }
+    }
+  }
+
+  sealed trait List[+A] extends ListF[A, List[A]] {
+    def fold[T](f: ListF[A, T] => T): T = {
+      val nat: Nat_0_0 = new Nat_0_0 {
+        val from = Const0[List[A]]
+        val to   = Const0[T]
+        def apply[X](xs: List[A]): T = xs fold f
+      }
+      val z = ListF fmap nat // z[X] : ListF[X, List[A]] => ListF[X, T]
+      val m = (z[A] _).asInstanceOf[ListF[A, List[A]] => ListF[A, T]] // why?
+      f(m(this))
+    }
+
+    def map[A, B](f: A => B): List[B] = ??? // fixed point is hard to cook up.
+  }
+
+  object List {
+    import language.implicitConversions
+
+    implicit def fixListF[A](xs: ListF[A, List[A]]): List[A] = xs match {
+      case Nil => Nil
+      case Cons(x, xs) => new Cons(x, xs) with List[A]
+    }
+
+    def apply[A](args: A*): List[A] = args.foldRight[List[A]](Nil)(Cons[A, List[A]])
+  }
+}
+
+object TestBruteForceCategories extends BruteForceCategories {
+  val xs = List(1,2,3,4,5)
+
+  def main(args: Array[String]) {
+    val product = xs.fold[Int] {
+      case Nil => 1
+      case Cons(x, xs) => x * xs
+    }
+    println(s"Π $xs = $product")
   }
 }
