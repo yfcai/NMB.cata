@@ -4,19 +4,28 @@ trait FunctorRep {
   trait Functor[F[_]] {
     def fmap[A, B]: (A => B) => F[A] => F[B]
 
-    //def fix(x: F[Fix[F]]): Fix[F] = ???
+    // this method is impossible short of making every functor covariant
+    // which also makes functor instances untypeable
+    // sample error messsage: [+X](Nothing, X) expected, [X](Nothing, X) encountered
+    //
+    //def fix(x: G[Fix[G]]): Fix[G] = ???
   }
 
   type Const[X] = { type λ[Y] = X }
 
   type Identity[X] = X
 
-  type Times[F[_], G[_]] = {
-    type λ[X] = (F[X], G[X])
+  case class P[+A, +B](_1: A, _2: B)
+  sealed trait S[+A, +B]
+  case class L[+A](get: A) extends S[A, Nothing]
+  case class R[+B](get: B) extends S[Nothing, B]
+
+  type LP[F[_], G[_]] = {
+    type λ[X] = P[F[X], G[X]]
   }
 
-  type Plus[F[_], G[_]] = {
-    type λ[X] = Either[F[X], G[X]]
+  type LS[F[_], G[_]] = {
+    type λ[X] = S[F[X], G[X]]
   }
 
   case class K[X]() extends Functor[Const[X]#λ] {
@@ -28,59 +37,84 @@ trait FunctorRep {
   }
 
   case class :*:[F[_], G[_]](_1: Functor[F], _2: Functor[G])
-      extends Functor[Times[F, G]#λ] {
+      extends Functor[LP[F, G]#λ] {
     def fmap[A, B] = f => {
-      case (x, y) => (_1.fmap(f)(x), _2.fmap(f)(y))
+      case P(x, y) => P(_1.fmap(f)(x), _2.fmap(f)(y))
     }
   }
 
   case class :+:[F[_], G[_]](_L: Functor[F], _R: Functor[G])
-      extends Functor[Plus[F, G]#λ] {
+      extends Functor[LS[F, G]#λ] {
     def fmap[A, B] = f => {
-      case Left(x) => Left(_L.fmap(f)(x))
-      case Right(y) => Right(_R.fmap(f)(y))
+      case L(x) => L(_L.fmap(f)(x))
+      case R(y) => R(_R.fmap(f)(y))
     }
   }
 
-  // F should only be a composite of sums and products
   sealed trait Fix[+F[+_]] {
-    def unroll: F[Fix[F]]
-    def fold[T](f: F[T] => T): T
-  }
-
-  case class Roll[+F[+_]: Functor](unroll: F[Fix[F]]) extends Fix[F] {
-    def fold[T](f: F[T] => T): T = f(implicitly[Functor[F]].fmap[Fix[F], T](_.fold(f))(unroll))
-  }
-
-  object Fix {
-    import language.implicitConversions
-
-    implicit def autoUnroll[F[+_]](fixed: Fix[F]): F[Fix[F]] = fixed.unroll
+    this: F[Fix[F]] =>
+    import annotation.unchecked.uncheckedVariance
+    // this.functor is write-only, do not call it elsewhere!
+    val functor: Functor[F] @uncheckedVariance
+    def fold[T](f: F[T] => T): T = f(functor.fmap[Fix[F], T](_.fold(f))(this))
   }
 
   // CASE STUDY: LISTS
 
-  // hide the content of Nil because it's gonna be uninteresting
-  // ... how about leaving 1 component always open for datatype a la carte?
-  type ListF[+A, +L] = Either[Unit, (A, L)]
+  // can't call List.PatternFunctor[A]#λ here
+  // so that variance is checked
+  type List[+A] = Fix[({ type λ[+L] = S[Unit, P[A, L]] })#λ]
 
-  // private[this] gets rid of unchecked variance
-  private[this] type ListP[+A] = { type λ[+L] = ListF[A, L] }
+  object List {
+    type F[A] = { type λ[+L] = S[Unit, P[A, L]] }
 
-  // works without @uncheckedVariance
-  type List[+A] = Fix[ListP[A]#λ]
+    def patternFunctor[A]: Functor[F[A]#λ] =
+      // the functor instance is annoying to write.
+      //
+      // TODO
+      // 1. def macro to fill in type annotations.
+      // 2. def macro to convert nominal syntax & mutual recursions into this
+      :+:[Const[Unit]#λ, LP[Const[A]#λ, Identity]#λ](
+        K[Unit],
+        :*:[Const[A]#λ, Identity](K[A], I))
+  }
 
   // no, do not dream of merging fixed points any more.
   // it will be Nil() from now on, never Nil.
   object Nil {
-    def apply(): List[Nothing] = Roll[ListP[Nothing]#λ](Left(())) {
-      // the functor instance is annoying to write.
-      // the type of a fixed-point data is even more annoying to write.
-      // hide it in a macro?
-      :+:[Const[Unit]#λ, Times[Const[Nothing]#λ, Identity]#λ](
-        K[Unit],
-        :*:[Const[Nothing]#λ, Identity](K[Nothing], I)
-      )
-    }
+    def apply(): List[Nothing] =
+      new L(()) with Fix[List.F[Nothing]#λ] {
+        val functor = List.patternFunctor
+      }
+
+    /*
+    def unapply(xs: Either[_, _]): Boolean = xs match {
+      // each case matches both the fixed point and the pattern...
+      case Left(()) => true
+      case _ => false
+    } */
   }
+/*
+  object Cons {
+    def apply[A](x: A, xs: List[A]): List[A] =
+      ??? //Roll[List.PatternFunctor[A]#λ](Right((x, xs)))(List.patternFunctor)
+
+    def unapply[A](xs: Either[_, (A, List[A])]): Option[(A, List[A])] =
+      xs match {
+        case Right((x, xs)) => Some((x, xs))
+        case _ => None
+      }
+  }*/
+}
+
+object TestFunctorRep extends FunctorRep {
+/*
+  val xs: List[Int] = Nil()
+
+  def main(args: Array[String]) {
+    // xs match { case Nil() => println("ok") } // uncaught MatchError
+    xs match {
+      case Nil() => println("ok")
+    }
+  }*/
 }
